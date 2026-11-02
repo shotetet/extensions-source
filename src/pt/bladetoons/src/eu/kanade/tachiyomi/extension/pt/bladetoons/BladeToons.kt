@@ -1,14 +1,12 @@
 package eu.kanade.tachiyomi.extension.pt.bladetoons
 
 import eu.kanade.tachiyomi.multisrc.mangotheme.MangoTheme
+import keiyoushi.annotation.Source
 
-class BladeToons : MangoTheme() {
+@Source
+abstract class BladeToons : MangoTheme() {
 
-    override val name = "Bladetoons"
-
-    override val baseUrl = "https://bladetoons.com"
-
-    override val lang = "pt-BR"
+    override val apiUrl = "https://api.bladetoons.com/api"
 
     override val cdnUrl = "https://cdn.bladetoons.com"
 
@@ -17,6 +15,8 @@ class BladeToons : MangoTheme() {
     override val webMangaPathSegment = "obra"
 
     override val webUrlSalt = "mango-secret-salt-2024"
+
+    override val requiresLogin = true
 
     override fun buildTimedWebMangaReference(mangaId: String, hash: String): String = "$mangaId$hash${mangaId.firstOrNull()?.toString().orEmpty()}"
 

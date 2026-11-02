@@ -1,9 +1,11 @@
 package eu.kanade.tachiyomi.extension.en.s2manga
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
+import keiyoushi.annotation.Source
+import org.jsoup.nodes.Element
 
-class S2Manga : Madara("S2Manga", "https://s2manga.com", "en") {
+@Source
+abstract class S2Manga : Madara() {
 
-    override val useLoadMoreRequest = LoadMoreStrategy.Always
-    override val pageListParseSelector = "div.page-break img[src*=\"https\"]"
+    override fun imageFromElement(element: Element): String? = super.imageFromElement(element)?.trim()
 }

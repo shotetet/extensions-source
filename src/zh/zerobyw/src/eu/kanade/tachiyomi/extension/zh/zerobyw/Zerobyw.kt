@@ -1,88 +1,71 @@
 package eu.kanade.tachiyomi.extension.zh.zerobyw
 
-import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.util.asJsoup
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.asJsoup
 import keiyoushi.utils.getPreferences
+import kotlinx.serialization.json.JsonElement
 import okhttp3.Headers
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
-import okhttp3.Response
+import okhttp3.OkHttpClient
 import org.jsoup.nodes.Element
 
-class Zerobyw :
-    HttpSource(),
-    ConfigurableSource {
+@Source
+abstract class Zerobyw : KeiSource() {
 
-    override val name: String = "zero搬运网"
-    override val lang: String = "zh"
-    override val supportsLatest: Boolean = false
+    override val supportsLatest = false
 
-    private val preferences = getPreferences { clearOldBaseUrl() }
+    private val preferences = getPreferences()
 
-    override val client = network.cloudflareClient.newBuilder()
-        .addInterceptor(UpdateUrlInterceptor(preferences))
-        .build()
+    override fun OkHttpClient.Builder.configureClient() = addInterceptor(UpdateUrlInterceptor(preferences))
 
-    override val baseUrl get() = when {
-        isCi -> ciGetUrl(client)
-        else -> preferences.baseUrl
-    }
-
-    private val isCi = System.getenv("CI") == "true"
-
-    override fun headersBuilder() = Headers.Builder()
-        .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
+    override fun Headers.Builder.configureHeaders() = set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0")
 
     // Popular
     // Website does not provide popular manga, this is actually latest manga
 
-    override fun popularMangaRequest(page: Int) = GET("$baseUrl/plugin.php?id=jameson_manhua&c=index&a=ku&page=$page", headers)
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val url = browseUrlBuilder()
+            .addQueryParameter("page", page.toString())
+            .build()
+        return fetchMangaList(url)
+    }
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-        val mangas = document.select("div.uk-card").map { element: Element ->
+    private suspend fun fetchMangaList(url: HttpUrl): MangasPage {
+        val document = client.get(url, Fetch.DOCUMENT).asJsoup()
+        val mangas = document.select("a[href*=/details/?kuid=]").map { element: Element ->
             parseMangaFromCard(element)
         }
-        val hasNextPage = document.selectFirst("div.pg > a.nxt") != null
+        val hasNextPage = document.selectFirst("a:contains(下一页)") != null
         return MangasPage(mangas, hasNextPage)
     }
 
-    private fun parseMangaFromCard(element: Element): SManga {
-        val link = element.selectFirst("p.mt5 > a")!!
-        return SManga.create().apply {
-            title = getTitle(link.text())
-            setUrlWithoutDomain(link.absUrl("href"))
-            thumbnail_url = element.selectFirst("img")!!.attr("src")
-        }
+    private fun parseMangaFromCard(element: Element): SManga = SManga.create().apply {
+        title = getTitle(element.selectFirst("h3")!!.text())
+        setUrlWithoutDomain(element.absUrl("href"))
+        thumbnail_url = element.selectFirst("img")!!.absUrl("src")
     }
 
     // Latest
 
-    override fun latestUpdatesRequest(page: Int): Request = throw UnsupportedOperationException()
-    override fun latestUpdatesParse(response: Response): MangasPage = throw UnsupportedOperationException()
+    override suspend fun getLatestUpdates(page: Int): MangasPage = throw UnsupportedOperationException()
 
     // Search
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val builder = "$baseUrl/plugin.php".toHttpUrl().newBuilder()
-            .addEncodedQueryParameter("id", "jameson_manhua")
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
+        val builder = browseUrlBuilder()
         if (query.isNotBlank()) {
-            builder
-                .addEncodedQueryParameter("a", "search")
-                .addEncodedQueryParameter("c", "index")
-                .addQueryParameter("keyword", query)
+            builder.addQueryParameter("keyword", query)
         } else {
-            builder
-                .addEncodedQueryParameter("c", "index")
-                .addEncodedQueryParameter("a", "ku")
             filters.forEach {
                 if (it is UriSelectFilterPath && it.toUri().second.isNotEmpty()) {
                     builder.addQueryParameter(it.toUri().first, it.toUri().second)
@@ -90,76 +73,64 @@ class Zerobyw :
             }
         }
         builder.addEncodedQueryParameter("page", page.toString())
-        return GET(builder.build(), headers)
+        return fetchMangaList(builder.build())
     }
 
-    override fun searchMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-        val mangas = document.select("a.uk-card, div.uk-card").map { element: Element ->
-            SManga.create().apply {
-                title = getTitle(element.selectFirst("p.mt5")!!.text())
-                setUrlWithoutDomain(element.selectFirst("a")!!.absUrl("href"))
-                thumbnail_url = element.selectFirst("img")!!.attr("src")
-            }
-        }
-        val hasNextPage = document.selectFirst("div.pg > a.nxt") != null
-        return MangasPage(mangas, hasNextPage)
-    }
+    // Details & Chapters
 
-    // Details
-
-    override fun mangaDetailsParse(response: Response): SManga {
-        val document = response.asJsoup()
-        return SManga.create().apply {
-            title = getTitle(document.selectFirst("h3.uk-heading-line")!!.text())
-            thumbnail_url = document.selectFirst("div.uk-width-medium > img")!!.absUrl("src")
-            author = document.selectFirst("div.cl > a.uk-label")!!.text().substring(3)
-            genre = document.select("div.cl > a.uk-label, div.cl > span.uk-label").eachText().joinToString(", ")
-            description = document.select("li > div.uk-alert").html().replace("<br>", "")
-            status = when (document.select("div.cl > span.uk-label").last()!!.text()) {
-                "连载中" -> SManga.ONGOING
-                "已完结" -> SManga.COMPLETED
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val document = client.get(getMangaUrl(manga), Fetch.DOCUMENT).asJsoup()
+        val labs = document
+            .select("main div.flex-wrap.text-sm > span")
+            .eachText()
+        val details = SManga.create().apply {
+            title = getTitle(document.selectFirst("main h1")!!.text())
+            thumbnail_url = document.selectFirst("main img.object-contain")!!.absUrl("src")
+            author = labs.firstOrNull()?.removePrefix("作者: ")
+            genre = labs.joinToString(", ")
+            description = document.selectFirst("p[x-ref=summaryText]")?.html()?.replace("<br>", "")
+            status = when {
+                labs.any { it == "连载中" } -> SManga.ONGOING
+                labs.any { it == "已完结" } -> SManga.COMPLETED
                 else -> SManga.UNKNOWN
             }
         }
-    }
-
-    // Chapters
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val document = response.asJsoup()
-        return document.select("div.uk-grid-collapse > div.muludiv").map { element: Element ->
+        val chapterList = document.select("div.grid a[href*=/view/index.php]").map { element: Element ->
             SChapter.create().apply {
-                setUrlWithoutDomain(element.selectFirst("a.uk-button-default")!!.absUrl("href"))
-                name = element.selectFirst("a.uk-button-default")!!.text()
+                setUrlWithoutDomain(element.absUrl("href"))
+                name = element.text()
             }
         }.asReversed()
+        return SMangaUpdate(details, chapterList)
     }
 
     // Pages
 
-    override fun pageListParse(response: Response): List<Page> {
-        val document = response.asJsoup()
-        val images = document.select("div.uk-text-center > img")
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val document = client.get(getChapterUrl(chapter), Fetch.DOCUMENT).asJsoup()
+        val images = document.select("#image-container img.manga-image")
         if (images.isEmpty()) {
             var message = document.select("div#messagetext > p")
             if (message.isEmpty()) {
-                message = document.select("div.uk-alert > p")
+                message = document.select("main + div p")
             }
             if (message.isNotEmpty()) {
                 error(message.text())
             }
         }
         return images.mapIndexed { index: Int, img: Element ->
-            Page(index, imageUrl = img.attr("src"))
+            Page(index, imageUrl = img.absUrl("src"))
         }
     }
 
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
-
     // Filters
 
-    override fun getFilterList() = FilterList(
+    override fun getFilterList(data: JsonElement?) = FilterList(
         eu.kanade.tachiyomi.source.model.Filter.Header("如果使用文本搜索"),
         eu.kanade.tachiyomi.source.model.Filter.Header("过滤器将被忽略"),
         CategoryFilter(),
@@ -182,7 +153,5 @@ class Zerobyw :
         }
     }
 
-    override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        screen.addPreference(getBaseUrlPreference(screen.context))
-    }
+    private fun browseUrlBuilder() = "$baseUrl/pc/pc/".toHttpUrl().newBuilder()
 }

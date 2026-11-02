@@ -1,17 +1,11 @@
 package eu.kanade.tachiyomi.extension.tr.tortugaceviri
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
-import java.text.SimpleDateFormat
+import keiyoushi.annotation.Source
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class TortugaCeviri :
-    Madara(
-        "Tortuga Ceviri",
-        "https://tortugaceviri.com",
-        "tr",
-        SimpleDateFormat("MMM d, yyy", Locale("tr")),
-    ) {
-    override val versionId = 2
-
-    override val useNewChapterEndpoint = true
+@Source
+abstract class TortugaCeviri : Madara() {
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("MMM d, yyy", Locale.forLanguageTag("tr"))
 }

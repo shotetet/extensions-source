@@ -2,34 +2,18 @@ package eu.kanade.tachiyomi.extension.en.gedecomix
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
 import eu.kanade.tachiyomi.source.model.SManga
+import keiyoushi.annotation.Source
 import org.jsoup.nodes.Element
 
-class GEDEComix :
-    Madara(
-        "GEDE Comix",
-        "https://gedecomix.com",
-        "en",
-    ) {
+@Source
+abstract class GEDEComix : Madara() {
     override val mangaDetailsSelectorThumbnail = "${super.mangaDetailsSelectorThumbnail}:not([data-eio])"
-
-    override val useNewChapterEndpoint = true
-
     override val mangaSubString = "porncomic"
+    override val chapterMode = ChapterMode.MangaAjax
 
-    override fun popularMangaFromElement(element: Element): SManga {
-        val manga = super.popularMangaFromElement(element)
-        return fixThumbnail(element, manga)
-    }
-
-    override fun searchMangaFromElement(element: Element): SManga {
-        val manga = super.searchMangaFromElement(element)
-        return fixThumbnail(element, manga)
-    }
-
-    private fun fixThumbnail(element: Element, manga: SManga): SManga {
-        element.selectFirst("img:not([data-eio])")?.also {
-            manga.thumbnail_url = imageFromElement(it)
+    override fun archiveManga(element: Element, id: String): SManga? = super.archiveManga(element, id)?.apply {
+        element.selectFirst("img:not([data-eio])")?.let {
+            thumbnail_url = imageFromElement(it)
         }
-        return manga
     }
 }

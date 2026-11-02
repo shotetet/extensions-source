@@ -1,19 +1,13 @@
 package eu.kanade.tachiyomi.extension.en.anisascans
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.annotation.Source
+import keiyoushi.network.rateLimit
+import okhttp3.OkHttpClient
 
-class AnisaScans :
-    Madara(
-        "Anisa Scans",
-        "https://anisascans.in",
-        "en",
-    ) {
-    override val client = super.client.newBuilder()
-        .rateLimit(3)
-        .build()
+@Source
+abstract class AnisaScans : Madara() {
+    override fun OkHttpClient.Builder.configureClient() = rateLimit(3) { !it.encodedPath.startsWith("/wp-content/uploads/") }
 
-    override val useLoadMoreRequest = LoadMoreStrategy.Never
-
-    override val useNewChapterEndpoint = true
+    override val chapterMode = ChapterMode.MangaAjax
 }

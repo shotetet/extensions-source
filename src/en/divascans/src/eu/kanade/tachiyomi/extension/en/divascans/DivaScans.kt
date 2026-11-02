@@ -1,11 +1,7 @@
 package eu.kanade.tachiyomi.extension.en.divascans
 
-import eu.kanade.tachiyomi.multisrc.iken.Iken
+import eu.kanade.tachiyomi.multisrc.vinetheme.VineTheme
+import keiyoushi.annotation.Source
 
-class DivaScans :
-    Iken(
-        "Diva Scans",
-        "en",
-        "https://divatoon.com",
-        "https://api.divatoon.com",
-    )
+@Source
+abstract class DivaScans : VineTheme()

@@ -1,13 +1,13 @@
 package eu.kanade.tachiyomi.extension.vi.medamtruyen
 
 import android.util.Base64
+import keiyoushi.utils.aesCbc
+import keiyoushi.utils.aesDecrypt
+import keiyoushi.utils.decodeHex
 import keiyoushi.utils.parseAs
 import org.jsoup.Jsoup
-import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
-import javax.crypto.spec.SecretKeySpec
 
 object ImageDecryptor {
     private const val PBKDF2_ITERATIONS = 999
@@ -72,8 +72,8 @@ object ImageDecryptor {
         val saltString = encryptedData.salt ?: error("Missing salt")
 
         val ciphertext = Base64.decode(ciphertextString, Base64.DEFAULT)
-        val ivBytes = hexStringToByteArray(ivString)
-        val saltBytes = hexStringToByteArray(saltString)
+        val ivBytes = ivString.decodeHex()
+        val saltBytes = saltString.decodeHex()
 
         val keySpec = PBEKeySpec(
             passphrase.toCharArray(),
@@ -84,12 +84,7 @@ object ImageDecryptor {
         val keyFactory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512")
         val keyBytes = keyFactory.generateSecret(keySpec).encoded
 
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        val secretKey = SecretKeySpec(keyBytes, "AES")
-        val ivSpec = IvParameterSpec(ivBytes)
-        cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
-
-        return String(cipher.doFinal(ciphertext), Charsets.UTF_8)
+        return ciphertext.aesDecrypt(aesCbc(keyBytes, ivBytes)).decodeToString()
     }
 
     private fun extractImagesFromDecryptedHtml(
@@ -134,15 +129,5 @@ object ImageDecryptor {
                 .ifEmpty { imageElement.absUrl("src") }
                 .takeIf { it.isNotBlank() }
         }.distinct()
-    }
-
-    private fun hexStringToByteArray(hex: String): ByteArray {
-        val bytes = ByteArray(hex.length / 2)
-        var index = 0
-        while (index < hex.length) {
-            bytes[index / 2] = ((Character.digit(hex[index], 16) shl 4) + Character.digit(hex[index + 1], 16)).toByte()
-            index += 2
-        }
-        return bytes
     }
 }

@@ -1,17 +1,13 @@
 package eu.kanade.tachiyomi.extension.id.klikmanga
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
-import java.text.SimpleDateFormat
+import keiyoushi.annotation.Source
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class KlikManga :
-    Madara(
-        "KlikManga",
-        "https://klikmanga.org",
-        "id",
-        SimpleDateFormat("MMMM dd, yyyy", Locale("id")),
-    ) {
+@Source
+abstract class KlikManga : Madara() {
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("MMMM dd, yyyy", Locale.forLanguageTag("id"))
     override val mangaSubString = "daftar-komik"
-
-    override val useLoadMoreRequest = LoadMoreStrategy.Always
+    override val chapterMode = ChapterMode.MangaAjax
 }

@@ -1,17 +1,17 @@
 package eu.kanade.tachiyomi.extension.en.cocomic
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.annotation.Source
+import keiyoushi.network.rateLimit
 import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.seconds
 
-class Cocomic : Madara("Cocomic", "https://cocomic.co", "en") {
+@Source
+abstract class Cocomic : Madara() {
 
-    override val client: OkHttpClient = super.client.newBuilder()
-        .rateLimit(1, 2, TimeUnit.SECONDS)
-        .build()
+    override fun OkHttpClient.Builder.configureClient() = rateLimit(1, 2.seconds) { !it.encodedPath.startsWith("/wp-content/uploads/") }
 
-    override val useNewChapterEndpoint = true
+    override val chapterMode = ChapterMode.MangaAjax
 
     override fun chapterListSelector() = "li.wp-manga-chapter:not(.premium)"
 }

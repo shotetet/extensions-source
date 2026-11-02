@@ -1,17 +1,12 @@
 package eu.kanade.tachiyomi.extension.es.monopolyscan
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
-import java.text.SimpleDateFormat
+import keiyoushi.annotation.Source
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class MonopolyScan :
-    Madara(
-        "Monopoly Scan",
-        "https://monopolymanhua.com",
-        "es",
-        SimpleDateFormat("MMM dd, yyyy", Locale("es")),
-    ) {
-    override val useLoadMoreRequest = LoadMoreStrategy.Never
-
-    override val useNewChapterEndpoint = true
+@Source
+abstract class MonopolyScan : Madara() {
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("MMMM d, yyyy", Locale.forLanguageTag("es"))
+    override val chapterMode = ChapterMode.MangaAjax
 }

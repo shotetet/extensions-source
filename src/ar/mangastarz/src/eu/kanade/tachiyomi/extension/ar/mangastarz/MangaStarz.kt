@@ -1,17 +1,11 @@
 package eu.kanade.tachiyomi.extension.ar.mangastarz
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
-import java.text.SimpleDateFormat
+import keiyoushi.annotation.Source
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class MangaStarz :
-    Madara(
-        "Manga Starz",
-        "https://manga-starz.net",
-        "ar",
-        dateFormat = SimpleDateFormat("d MMMM، yyyy", Locale("ar")),
-    ) {
-    override val chapterUrlSuffix = ""
-    override val useLoadMoreRequest = LoadMoreStrategy.Never
-    override val useNewChapterEndpoint = false
+@Source
+abstract class MangaStarz : Madara() {
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("d MMMM، yyyy", Locale.forLanguageTag("ar"))
 }

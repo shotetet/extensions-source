@@ -1,10 +1,12 @@
 package eu.kanade.tachiyomi.extension.en.toongod
 
-import eu.kanade.tachiyomi.multisrc.madara.Madara
-import java.text.SimpleDateFormat
+import eu.kanade.tachiyomi.multisrc.madara.MadaraNoAjax
+import keiyoushi.annotation.Source
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class ToonGod : Madara("ToonGod", "https://www.toongod.org", "en", SimpleDateFormat("d MMM yyyy", Locale.US)) {
+@Source
+abstract class ToonGod : MadaraNoAjax() {
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.US)
     override val mangaSubString = "webtoons"
-    override val useNewChapterEndpoint = false
 }

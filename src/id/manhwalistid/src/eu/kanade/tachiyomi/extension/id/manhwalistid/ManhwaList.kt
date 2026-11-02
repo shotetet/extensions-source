@@ -1,16 +1,11 @@
 package eu.kanade.tachiyomi.extension.id.manhwalistid
 
 import eu.kanade.tachiyomi.multisrc.mangathemesia.MangaThemesia
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.annotation.Source
+import keiyoushi.network.rateLimit
 import okhttp3.OkHttpClient
 
-class ManhwaList :
-    MangaThemesia(
-        "Manhwa List",
-        "https://manhwalist02.site",
-        "id",
-    ) {
-    override val client: OkHttpClient = super.client.newBuilder()
-        .rateLimit(3)
-        .build()
+@Source
+abstract class ManhwaList : MangaThemesia() {
+    override fun OkHttpClient.Builder.configureClient() = rateLimit(3)
 }

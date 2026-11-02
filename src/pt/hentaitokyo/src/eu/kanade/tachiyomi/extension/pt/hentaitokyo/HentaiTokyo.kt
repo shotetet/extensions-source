@@ -1,18 +1,13 @@
 package eu.kanade.tachiyomi.extension.pt.hentaitokyo
 
 import eu.kanade.tachiyomi.multisrc.gattsu.Gattsu
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.annotation.Source
+import keiyoushi.network.rateLimit
 import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.seconds
 
-class HentaiTokyo :
-    Gattsu(
-        "Hentai Tokyo",
-        "https://hentaitokyo.net",
-        "pt-BR",
-    ) {
+@Source
+abstract class HentaiTokyo : Gattsu() {
 
-    override val client: OkHttpClient = super.client.newBuilder()
-        .rateLimit(1, 2, TimeUnit.SECONDS)
-        .build()
+    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = rateLimit(1, 2.seconds)
 }

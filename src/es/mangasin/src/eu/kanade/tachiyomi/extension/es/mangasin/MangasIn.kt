@@ -3,48 +3,43 @@ package eu.kanade.tachiyomi.extension.es.mangasin
 import android.util.Base64
 import eu.kanade.tachiyomi.multisrc.mmrcms.MMRCMS
 import eu.kanade.tachiyomi.multisrc.mmrcms.SuggestionDto
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.util.asJsoup
-import keiyoushi.lib.cryptoaes.CryptoAES
+import keiyoushi.annotation.Source
 import keiyoushi.lib.synchrony.Deobfuscator
-import kotlinx.serialization.decodeFromString
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.network.rateLimit
+import keiyoushi.utils.cryptoJsDecrypt
+import keiyoushi.utils.decodeHex
+import keiyoushi.utils.parseAs
+import keiyoushi.utils.tryParseDateTime
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import okhttp3.Request
+import okhttp3.OkHttpClient
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import java.net.URLDecoder
-import java.text.ParseException
-import java.text.SimpleDateFormat
+import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.time.Duration.Companion.seconds
 
-class MangasIn :
-    MMRCMS(
-        "Mangas.in",
-        "https://m440.in",
-        "es",
-        supportsAdvancedSearch = false,
-        dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US),
-    ) {
-    override val client = super.client.newBuilder()
-        .rateLimitHost(baseUrl.toHttpUrl(), 1, 1)
-        .build()
+@Source
+abstract class MangasIn : MMRCMS() {
 
-    override fun headersBuilder() = super.headersBuilder()
-        .add("Referer", "$baseUrl/")
+    override val supportsAdvancedSearch = false
 
-    override fun latestUpdatesRequest(page: Int) = GET("$baseUrl/lasted?p=$page", headers)
+    override val dateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.US)
+
+    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = rateLimit(1, 1.seconds) { it.host == baseUrl.toHttpUrl().host }
+
+    override fun latestUpdatesUrl(page: Int) = "$baseUrl/lasted?p=$page"
 
     override fun latestUpdatesParse(response: Response): MangasPage {
-        runCatching { fetchFilterOptions() }
-
-        val data = json.decodeFromString<LatestUpdateResponse>(response.body.string())
+        val data = response.parseAs<LatestUpdateResponse>()
         val manga = data.data.map {
             SManga.create().apply {
                 url = "/$itemPath/${it.slug}"
@@ -57,28 +52,29 @@ class MangasIn :
         return MangasPage(manga, hasNextPage)
     }
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+    override fun searchMangaUrl(page: Int, query: String, filters: FilterList): String {
         if (query.isEmpty()) {
-            return super.searchMangaRequest(page, query, filters)
+            return super.searchMangaUrl(page, query, filters)
         }
 
-        val url = "$baseUrl/search".toHttpUrl().newBuilder().apply {
-            addQueryParameter("q", query)
-        }.build()
+        // Site's minimum: 3 bytes of the trimmed query
+        if (query.trim().encodeToByteArray().size < 3) {
+            throw Exception("Search query must be at least 3 characters")
+        }
 
-        return GET(url, headers)
+        return "$baseUrl/search".toHttpUrl().newBuilder().apply {
+            addQueryParameter("q", query)
+        }.build().toString()
     }
 
-    override fun searchMangaParse(response: Response): MangasPage {
+    override fun searchMangaParse(response: Response, page: Int): MangasPage {
         val searchType = response.request.url.pathSegments.last()
 
         if (searchType != "search") {
-            return super.searchMangaParse(response)
+            return super.searchMangaParse(response, page)
         }
 
-        searchDirectory = json.decodeFromString<List<SuggestionDto>>(response.body.string())
-
-        return parseSearchDirectory(1)
+        return parseSearchDirectory(response.parseAs<List<SuggestionDto>>(), page)
     }
 
     override fun mangaDetailsParse(document: Document) = super.mangaDetailsParse(document).apply {
@@ -92,8 +88,8 @@ class MangasIn :
 
     private var key = ""
 
-    private fun getKey(): String {
-        val script = client.newCall(GET("$baseUrl/js/ads2.js")).execute().body.string()
+    private suspend fun getKey(): String {
+        val script = client.get("$baseUrl/js/ads2.js", Fetch.SCRIPT).body.string()
         val deobfuscatedScript = Deobfuscator.deobfuscateScript(script)
             ?: throw Exception("No se pudo desofuscar el script")
 
@@ -108,25 +104,24 @@ class MangasIn :
             ?: throw Exception("No se pudo encontrar la clave")
     }
 
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val document = response.asJsoup()
+    override suspend fun chapterListParse(document: Document): List<SChapter> {
         val mangaUrl = document.location().removeSuffix("/")
         val encodeChapterData = CHAPTER_DATA_REGEX.find(document.html())?.value ?: throw Exception("No se pudo encontrar la lista de capítulos")
         val unescapedChapterData = encodeChapterData.unescape()
-        val chapterData = json.decodeFromString<CDT>(unescapedChapterData)
+        val chapterData = unescapedChapterData.parseAs<CDT>()
         val salt = chapterData.s.decodeHex()
 
         val unsaltedCipherText = Base64.decode(chapterData.ct, Base64.DEFAULT)
         val cipherText = SALTED + salt + unsaltedCipherText
 
-        val decrypted = CryptoAES.decrypt(Base64.encodeToString(cipherText, Base64.DEFAULT), key).ifEmpty {
+        val decrypted = runCatching { cipherText.cryptoJsDecrypt(key) }.getOrElse {
             key = getKey()
-            CryptoAES.decrypt(Base64.encodeToString(cipherText, Base64.DEFAULT), key)
-        }.ifEmpty { throw Exception("No se pudo desencriptar los capítulos") }
+            cipherText.cryptoJsDecrypt(key)
+        }.decodeToString()
 
         val unescaped = decrypted.unescapeJava().removeSurrounding("\"").unescape()
 
-        val chapters = json.decodeFromString<List<Chapter>>(unescaped)
+        val chapters = unescaped.parseAs<List<Chapter>>()
 
         return chapters.map {
             SChapter.create().apply {
@@ -136,11 +131,7 @@ class MangasIn :
                     "Capítulo ${it.number}: ${it.name}"
                 }
 
-                date_upload = try {
-                    dateFormat.parse(it.createdAt)!!.time
-                } catch (_: ParseException) {
-                    0L
-                }
+                date_upload = dateFormat.tryParseDateTime(it.createdAt)
 
                 setUrlWithoutDomain("$mangaUrl/${it.slug}")
             }
@@ -174,14 +165,6 @@ class MangasIn :
         }
         builder.append(escaped)
         return builder.toString()
-    }
-
-    private fun String.decodeHex(): ByteArray {
-        check(length % 2 == 0) { "Must have an even length" }
-
-        return chunked(2)
-            .map { it.toInt(16).toByte() }
-            .toByteArray()
     }
 }
 

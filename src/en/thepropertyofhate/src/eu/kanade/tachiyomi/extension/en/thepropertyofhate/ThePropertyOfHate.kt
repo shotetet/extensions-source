@@ -1,90 +1,115 @@
 package eu.kanade.tachiyomi.extension.en.thepropertyofhate
 
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.util.asJsoup
-import okhttp3.Request
-import okhttp3.Response
-import rx.Observable
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.asJsoup
 
-class ThePropertyOfHate : HttpSource() {
-    override val name = "The Property of Hate"
-
-    override val baseUrl = "https://jolleycomics.com"
-
-    override val lang = "en"
+@Source
+abstract class ThePropertyOfHate : KeiSource() {
 
     override val supportsLatest = false
-
-    private val firstChapterUrl = "/TPoH/The Hook/"
 
     // the one and only manga entry
     private val manga: SManga
         get() = SManga.create().apply {
             title = "The Property of Hate"
-            thumbnail_url = "https://pbs.twimg.com/media/DOBCcMiWkAA8Hvu.jpg"
+            thumbnail_url = "https://jolleycomics.com/images/Index/tpoh.png"
             artist = "Sarah Jolley"
             author = "Sarah Jolley"
             status = SManga.UNKNOWN
             url = baseUrl
         }
 
-    override fun fetchPopularManga(page: Int) = Observable.just(MangasPage(listOf(manga), false))!!
+    // ========================= Popular =========================
 
-    // write the data again to avoid bugs in backup restore
-    override fun fetchMangaDetails(manga: SManga): Observable<SManga> = Observable.just(this.manga.also { it.initialized = true })!!
+    override suspend fun getPopularManga(page: Int): MangasPage = MangasPage(listOf(manga), false)
 
-    // needed for the webview
-    override fun mangaDetailsRequest(manga: SManga) = GET(baseUrl, headers)
+    // ========================= Latest =========================
 
-    // no real base url for this comic so must read the first chapter's link
-    override fun chapterListRequest(manga: SManga) = GET(baseUrl + firstChapterUrl, headers)
+    override suspend fun getLatestUpdates(page: Int) = throw UnsupportedOperationException()
 
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val document = response.asJsoup()
+    // ========================= Search =========================
 
-        val chapters = mutableListOf(
-            // must hard code the first one
-            SChapter.create().apply {
-                url = firstChapterUrl
-                chapter_number = 1f
-                name = "The Hook"
-            },
-        )
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList) = throw UnsupportedOperationException()
 
-        document.select("select > option:not(:first-child)")
-            .mapIndexed { num, opt ->
-                SChapter.create().apply {
-                    setUrlWithoutDomain(opt.attr("value"))
-                    chapter_number = num + 2f
-                    name = opt.text()
+    // ========================= Details =========================
+
+    override fun getMangaUrl(manga: SManga): String = baseUrl
+
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val manga = this.manga.also { it.initialized = true }
+
+        val chapters = if (fetchChapters) {
+            getChapterList()
+        } else {
+            chapters
+        }
+
+        return SMangaUpdate(manga, chapters)
+    }
+
+    private suspend fun getChapterList(): List<SChapter> {
+        val document = client.get("$baseUrl/TPoH/", Fetch.DOCUMENT).asJsoup()
+
+        val chapters = mutableListOf<SChapter>()
+        var addedActiveChapter = false
+        var chapterNum = 1f
+
+        val options = document.select("select.jumpbox option:not([value=-1])")
+        for (opt in options) {
+            val isBold = opt.hasAttr("style") && opt.attr("style").contains("bold")
+            if (isBold) {
+                val currentChapterNum = chapterNum++
+                chapters.add(
+                    SChapter.create().apply {
+                        setUrlWithoutDomain(opt.absUrl("value"))
+                        name = "#${currentChapterNum.toInt()} - ${opt.text().trim()}"
+                        chapter_number = currentChapterNum
+                    },
+                )
+            } else {
+                if (!addedActiveChapter) {
+                    val pageText = opt.text()
+                    val chapterName = pageText.substringBefore(" : Page").trim()
+                    val pageUrl = opt.attr("value")
+                    val chapterUrl = pageUrl.substringBeforeLast("/") + "/"
+
+                    val currentChapterNum = chapterNum++
+                    chapters.add(
+                        SChapter.create().apply {
+                            setUrlWithoutDomain(chapterUrl)
+                            name = "#${currentChapterNum.toInt()} - $chapterName"
+                            chapter_number = currentChapterNum
+                        },
+                    )
+                    addedActiveChapter = true
                 }
-            }.let(chapters::addAll)
+            }
+        }
 
         return chapters.reversed()
     }
 
-    override fun pageListParse(response: Response) = response.asJsoup().select("select > optgroup > option")
+    // ========================= Pages =========================
+
+    override suspend fun getPageList(chapter: SChapter): List<Page> = client.get(baseUrl + chapter.url, Fetch.DOCUMENT).asJsoup()
+        .select("select.jumpbox option:not([style*=bold]):not([value=-1])")
         .mapIndexed { num, opt -> Page(num, opt.absUrl("value")) }
 
-    override fun imageUrlParse(response: Response): String = response.asJsoup().selectFirst(".comic_comic > img")!!.absUrl("src")
-
-    override fun popularMangaRequest(page: Int): Request = throw UnsupportedOperationException()
-
-    override fun popularMangaParse(response: Response): MangasPage = throw UnsupportedOperationException()
-
-    override fun latestUpdatesParse(response: Response): MangasPage = throw UnsupportedOperationException()
-
-    override fun latestUpdatesRequest(page: Int): Request = throw UnsupportedOperationException()
-
-    override fun mangaDetailsParse(response: Response): SManga = throw UnsupportedOperationException()
-
-    override fun searchMangaParse(response: Response): MangasPage = throw UnsupportedOperationException()
-
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = throw Exception("Search functionality is not available.")
+    override suspend fun getImageUrl(page: Page): String = client.get(page.url, Fetch.DOCUMENT).asJsoup()
+        .selectFirst(".comic_comic > img")!!
+        .absUrl("src")
 }

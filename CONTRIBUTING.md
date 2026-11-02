@@ -1,12 +1,12 @@
 # Contributing
 
-This guide has some instructions and tips on how to create a new Keiyoushi extension. Please **read
-it carefully** if you're a new contributor or don't have any experience on the required languages
-and knowledges.
+This guide provides instructions and tips on creating a new Keiyoushi extension. Please **read
+it carefully** if you are a new contributor or lack experience with the required languages
+and knowledge.
 
-This guide is not definitive and it's being updated over time. If you find any issues in it, feel
-free to report it through a [Meta Issue](https://github.com/keiyoushi/extensions-source/issues/new?assignees=&labels=Meta+request&template=06_request_meta.yml)
-or fixing it directly by submitting a Pull Request.
+This guide is not definitive and is updated over time. If you find any issues, feel
+free to report them through a [Meta Issue](https://github.com/keiyoushi/extensions-source/issues/new?assignees=&labels=Meta+request&template=06_request_meta.yml)
+or fix them directly by submitting a Pull Request.
 
 ## Table of Contents
 
@@ -18,10 +18,15 @@ or fixing it directly by submitting a Pull Request.
   - [Getting help](#getting-help)
   - [Writing an extension](#writing-an-extension)
     - [Setting up a new Gradle module](#setting-up-a-new-gradle-module)
+      - [Using ext-bootstrap.py](#using-ext-bootstrappy)
     - [Loading a subset of Gradle modules](#loading-a-subset-of-gradle-modules)
       - [Extension file structure](#extension-file-structure)
-      - [AndroidManifest.xml (optional)](#androidmanifestxml-optional)
-      - [build.gradle](#buildgradle)
+      - [build.gradle.kts](#buildgradlekts)
+    - [Source declaration](#source-declaration)
+      - [Annotate your source class](#annotate-your-source-class)
+      - [Declare sources in build.gradle.kts](#declare-sources-in-buildgradlekts)
+      - [baseUrl modes](#baseurl-modes)
+      - [Multiple sources from one class](#multiple-sources-from-one-class)
     - [Core dependencies](#core-dependencies)
       - [Extension API](#extension-api)
       - [lib tools](#lib-tools)
@@ -30,18 +35,32 @@ or fixing it directly by submitting a Pull Request.
       - [Creating a new lib](#creating-a-new-lib)
       - [keiyoushi.utils (core utilities)](#keiyoushiutils-core-utilities)
         - [JSON parsing - `parseAs`](#json-parsing---parseas)
-        - [JSON serialization - `toJsonString` / `toJsonRequestBody`](#json-serialization---tojsonstring--tojsonrequestbody)
+        - [JSON serialization - `toJsonString` / `toJsonRequestBody` / `toJsonElement`](#json-serialization---tojsonstring--tojsonrequestbody--tojsonelement)
         - [JSON models (DTOs) and serialization](#json-models-dtos-and-serialization)
-        - [Protobuf parsing and serialization — `parseAsProto` / `toRequestBodyProto`](#protobuf-parsing-and-serialization--parseasproto--torequestbodyproto)
-        - [Date parsing - `tryParse`](#date-parsing---tryparse)
+        - [Protobuf parsing and serialization - `parseAsProto` / `toRequestBodyProto`](#protobuf-parsing-and-serialization---parseasproto--torequestbodyproto)
+        - [Date parsing - `tryParse` helpers](#date-parsing---tryparse-helpers)
+        - [HTTP requests - `OkHttpClient.get` / `post` / `put` / `head`](#http-requests---okhttpclientget--post--put--head)
+        - [Rate limiting - `rateLimit`](#rate-limiting---ratelimit)
+        - [Custom cookies - `addCookie`](#custom-cookies---addcookie)
+        - [WebView execution - `runWebView` / `getLocalStorage`](#webview-execution---runwebview--getlocalstorage)
         - [Filter helpers - `firstInstance` / `firstInstanceOrNull`](#filter-helpers---firstinstance--firstinstanceornull)
+        - [SharedPreferences - `getPreferences` / `getPreferencesLazy`](#sharedpreferences---getpreferences--getpreferenceslazy)
         - [Next.js data extraction - `extractNextJs` / `extractNextJsRsc`](#nextjs-data-extraction---extractnextjs--extractnextjsrsc)
         - [Extracting URLs - `setUrlWithoutDomain` + `absUrl`](#extracting-urls---seturlwithoutdomain--absurl)
+        - [GraphQL Requests - `graphQLBody` / `parseGraphQLAs`](#graphql-requests---graphqlbody--parsegraphqlas)
+        - [GraphQL GET requests - `graphQLGet`](#graphql-get-requests---graphqlget)
+        - [JsonElement accessor helpers](#jsonelement-accessor-helpers)
+        - [ZIP streaming - `zipDirectoryAsync` / `readZipEntry`](#zip-streaming---zipdirectoryasync--readzipentry)
+        - [Jsoup helpers - `asJsoup` / `attrOrNull` / `textOrNull`](#jsoup-helpers---asjsoup--attrornull--textornull)
+        - [Cryptography - `decodeHex` / `rc4` / AES helpers](#cryptography---decodehex--rc4--aes-helpers)
+        - [Binary endian helpers](#binary-endian-helpers)
+        - [Decompression - `Inflater.inflate`](#decompression---inflaterinflate)
+        - [SeedRandom - seeded pseudo-random generator](#seedrandom---seeded-pseudo-random-generator)
       - [Additional dependencies](#additional-dependencies)
     - [Extension main class](#extension-main-class)
+      - [KeiSource](#keisource)
       - [Main class key variables](#main-class-key-variables)
     - [HTML and Image Processing](#html-and-image-processing)
-    - [OkHttp and Network](#okhttp-and-network)
     - [Extension call flow](#extension-call-flow)
       - [Popular Manga](#popular-manga)
       - [Latest Manga](#latest-manga)
@@ -53,9 +72,11 @@ or fixing it directly by submitting a Pull Request.
     - [Misc notes](#misc-notes)
     - [Advanced Extension features](#advanced-extension-features)
       - [Extension logic and app features](#extension-logic-and-app-features)
+      - [Configurable Sources and Preferences](#configurable-sources-and-preferences)
       - [URL intent filter](#url-intent-filter)
       - [Update strategy](#update-strategy)
       - [Renaming existing sources](#renaming-existing-sources)
+        - [Moving a source to a different directory](#moving-a-source-to-a-different-directory)
   - [Multi-source themes](#multi-source-themes)
     - [Creating a new theme](#creating-a-new-theme)
       - [Theme directory structure](#theme-directory-structure)
@@ -68,7 +89,7 @@ or fixing it directly by submitting a Pull Request.
     - [Logs](#logs)
     - [Inspecting network calls](#inspecting-network-calls)
     - [Using external network inspecting tools](#using-external-network-inspecting-tools)
-      - [Setup your proxy server](#setup-your-proxy-server)
+      - [Set up your proxy server](#set-up-your-proxy-server)
       - [OkHttp proxy setup](#okhttp-proxy-setup)
   - [Building](#building)
   - [Submitting the changes](#submitting-the-changes)
@@ -81,6 +102,7 @@ that existing contributors will not actively teach these to you.
 
 - Basic [Android development](https://developer.android.com/)
 - [Kotlin](https://kotlinlang.org/)
+- Java Development Kit (JDK) 17 or higher (required by the Gradle build system and Android Gradle Plugin)
 - Web scraping
   - [HTML](https://developer.mozilla.org/en-US/docs/Web/HTML)
   - [CSS selectors](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_Selectors)
@@ -90,6 +112,7 @@ that existing contributors will not actively teach these to you.
 ### Tools
 
 - [Android Studio](https://developer.android.com/studio)
+- [Java Development Kit (JDK) 17+](https://adoptium.net/)
 - Emulator or phone with developer options enabled and a recent version of Mihon installed
 - [Icon Generator](https://as280093.github.io/AndroidAssetStudio/icons-launcher.html)
 - [Try jsoup](https://try.jsoup.org/)
@@ -105,94 +128,93 @@ navigate and build. This will also reduce disk usage and network traffic.
 
 1. Do a partial clone.
 
-    ```bash
-    git clone --filter=blob:none --sparse <fork-repo-url>
-    cd extensions-source/
-    ```
+   ```bash
+   git clone --filter=blob:none --sparse <fork-repo-url>
+   cd extensions-source/
+   ```
 
 2. Configure sparse checkout.
 
-    There are two modes of pattern matching. The default is cone (🔺) mode.
-    Cone mode enables significantly faster pattern matching for big monorepos
-    and the sparse index feature to make Git commands more responsive.
-    In this mode, you can only filter by file path, which is less flexible
-    and might require more work when the project structure changes.
+   There are two modes of pattern matching. The default is cone mode.
+   Cone mode enables significantly faster pattern matching for big monorepos
+   and the sparse index feature to make Git commands more responsive.
+   In this mode, you can only filter by file path, which is less flexible
+   and might require more work when the project structure changes.
 
-    You can skip this code block to use legacy mode if you want easier filters.
-    It won't be much slower as the repo doesn't have that many files.
+   Cone mode is the recommended standard for pattern matching and responsiveness. Using non-cone mode is deprecated and discouraged.
 
-    To enable cone mode together with sparse index, follow these steps:
+   ```bash
+   git sparse-checkout set --cone --sparse-index
+   # add project folders
+   git sparse-checkout add common compiler core gradle lib lib-multisrc
+   # add a single source
+   git sparse-checkout add src/<lang>/<source>
+   ```
 
-    ```bash
-    git sparse-checkout set --cone --sparse-index
-    # add project folders
-    git sparse-checkout add buildSrc core gradle lib lib-multisrc utils
-    # add a single source
-    git sparse-checkout add src/<lang>/<source>
-    ```
+   To remove a source, open `.git/info/sparse-checkout` and delete the exact
+   lines you typed when adding it. Don't touch the other auto-generated lines
+   unless you fully understand how cone mode works, or you might break it.
 
-    To remove a source, open `.git/info/sparse-checkout` and delete the exact
-    lines you typed when adding it. Don't touch the other auto-generated lines
-    unless you fully understand how cone mode works, or you might break it.
+   ### Non-cone mode (Deprecated/Discouraged)
 
-    To use the legacy non-cone mode, follow these steps:
+   Using non-cone mode is deprecated and not recommended. If you still need it, follow these steps:
 
-    ```bash
-    # enable sparse checkout
-    git sparse-checkout set --no-cone
-    # edit sparse checkout filter
-    vim .git/info/sparse-checkout
-    # alternatively, if you have VS Code installed
-    code .git/info/sparse-checkout
-    ```
+   ```bash
+   # enable sparse checkout
+   git sparse-checkout set --no-cone
+   # edit sparse checkout filter
+   vim .git/info/sparse-checkout
+   # alternatively, if you have VS Code installed
+   code .git/info/sparse-checkout
+   ```
 
-    Here's an example:
+   Here's an example:
 
-    ```bash
-    /*
-    !/src/*
-    !/multisrc-lib/*
-    # allow a single source
-    /src/<lang>/<source>
-    # allow a multisrc theme
-    /lib-multisrc/<source>
-    # or type the source name directly
-    <source>
-    ```
+   ```bash
+   /*
+   !/src/*
+   !/lib-multisrc/*
+   # allow a single source
+   /src/<lang>/<source>
+   # allow a multisrc theme
+   /lib-multisrc/<source>
+   # or type the source name directly
+   <source>
+   ```
 
-    Explanation: the rules are like `gitignore`. We first exclude all sources
-    while retaining project folders, then add the needed sources back manually.
+   Explanation: the rules are like `gitignore`. We first exclude all sources
+   while retaining project folders, then add the needed sources back manually.
 
 3. Configure remotes.
 
-    ```bash
-    # add upstream
-    git remote add upstream <keiyoushi-repo-url>
-    # optionally disable push to upstream
-    git remote set-url --push upstream no_pushing
-    # optionally fetch main only (ignore all other branches)
-    git config remote.upstream.fetch "+refs/heads/main:refs/remotes/upstream/main"
-    # update remotes
-    git remote update
-    # track main of upstream instead of fork
-    git branch main -u upstream/main
-    ```
+   ```bash
+   # add upstream
+   git remote add upstream <keiyoushi-repo-url>
+   # optionally disable push to upstream
+   git remote set-url --push upstream no_pushing
+   # optionally fetch main only (ignore all other branches)
+   git config remote.upstream.fetch "+refs/heads/main:refs/remotes/upstream/main"
+   # update remotes
+   git remote update
+   # track main of upstream instead of fork
+   git branch main -u upstream/main
+   ```
 
 4. Useful configurations. (optional)
 
-    ```bash
-    # prune obsolete remote branches on fetch
-    git config remote.origin.prune true
-    # fast-forward only when pulling main branch
-    git config pull.ff only
-    # Add an alias to sync main branch without fetching useless blobs.
-    # If you run `git pull` to fast-forward in a blobless clone like this,
-    # all blobs (files) in the new commits are still fetched regardless of
-    # sparse rules, which makes the local repo accumulate unused files.
-    # Use `git sync-main` to avoid this. Be careful if you have changes
-    # on main branch, which is bad practice.
-    git config alias.sync-main '!git switch main && git fetch upstream && git reset --keep FETCH_HEAD'
-    ```
+   ```bash
+   # prune obsolete remote branches on fetch
+   git config remote.origin.prune true
+   # fast-forward only when pulling main branch
+   git config pull.ff only
+   # Add an alias to sync main branch without fetching useless blobs.
+   # If you run `git pull` to fast-forward in a blobless clone like this,
+   # all blobs (files) in the new commits are still fetched regardless of
+   # sparse rules, which makes the local repo accumulate unused files.
+   # Use `git sync-main` to avoid this. Be careful if you have changes
+   # on main branch, which is bad practice.
+   git config alias.sync-main '!git switch main && git fetch upstream && git reset --keep FETCH_HEAD'
+   ```
 
 5. Later, if you change the sparse checkout filter, run `git sparse-checkout reapply`.
 
@@ -202,19 +224,20 @@ Read more on
 [sparse checkout](https://github.blog/2020-01-17-bring-your-monorepo-down-to-size-with-sparse-checkout/),
 [sparse index](https://github.blog/2021-11-10-make-your-monorepo-feel-small-with-gits-sparse-index/),
 and [negative refspecs](https://github.blog/2020-10-19-git-2-29-released/#user-content-negative-refspecs).
+
 </details>
 
 ## Getting help
 
-- Join [the Discord server](https://discord.gg/3FbCpdKbdY) for online help and to ask questions while
-developing your extension. When doing so, please ask them in the `#programming` channel.
-- There are some features and tricks that are not explored in this document. Refer to existing
-extension code for examples.
+- Join [the Discord server](https://discord.gg/3FbCpdKbdY) for online help and to ask questions during
+  development. Please ask questions in the `#programming` channel.
+- There are features and tricks not explored in this document; refer to existing
+  extension code for examples.
 
 ## Writing an extension
 
-The quickest way to get started is to copy an existing extension's folder structure and renaming it
-as needed. We also recommend reading through a few existing extensions' code before you start.
+The quickest way to get started is by using the [ext-bootstrap.py](#using-ext-bootstrappy) script.
+We also recommend reading through the code of a few existing extensions before beginning.
 
 ### Setting up a new Gradle module
 
@@ -222,15 +245,49 @@ Each extension should reside in `src/<lang>/<mysourcename>`. Use `all` as `<lang
 source supports multiple languages or if it could support multiple sources.
 
 The `<lang>` used in the folder inside `src` should be the major `language` part. For example, if
-you will be creating a `pt-BR` source, use `<lang>` here as `pt` only. Inside the source class, use
-the full locale string instead.
+you will be creating a `pt-BR` source, use `<lang>` in the directory path as `pt` only (`src/pt/mysource`).
+In the `source {}` block in `build.gradle.kts`, set `lang = "pt-BR"` to specify the full locale string.
+Do NOT declare or override `lang` in the source class itself, as it is owned by the DSL/codegen and
+doing so will throw a fatal KSP compiler error.
+
+#### Using ext-bootstrap.py
+
+Instead of setting this up by hand, you can use the `ext-bootstrap.py` script to scaffold a new
+extension module automatically:
+
+```console
+$ python ext-bootstrap.py -n "My Source" -l en -u https://mysource.com
+```
+
+This creates `src/<lang>/<mysourcename>/build.gradle.kts` along with the extension's package
+directory and a starter source class. New (non-multisrc) sources are scaffolded extending
+`KeiSource` with `libVersion = "1.6"`; sources based on an existing multisrc theme (`-m`) extend
+that theme's base class and use its `libVersion`.
+
+Available options:
+
+| Flag                         | Description                                                              |
+|------------------------------|--------------------------------------------------------------------------|
+| `-n`, `--extname`            | Extension name                                                           |
+| `-l`, `--lang`, `--language` | Extension language (2- or 3-letter ISO code, or `all`)                   |
+| `-u`, `--baseurl`            | Extension base URL (must be `https://`)                                  |
+| `--source-name`              | Source name (defaults to `--extname`)                                    |
+| `-c`, `--content-warning`    | `SAFE`, `MIXED`, or `NSFW` (default: `SAFE`)                             |
+| `-m`, `--multisrc`           | Name of an existing multisrc theme to base the source on                 |
+| `--path`                     | Path to the extension repo directory (defaults to the current directory) |
+
+For example, to scaffold a source based on the `madara` multisrc theme:
+
+```console
+$ python ext-bootstrap.py -n "My Source" -l en -u https://mysource.com -m madara
+```
 
 ### Loading a subset of Gradle modules
 
 By default, all individual and multisrc extensions are loaded for local development.
 This may be inconvenient and can drastically slow down your system when working on a single extension.
 
-To adjust which modules are loaded, make adjustments to the `settings.gradle.kts` file as needed. You can specify the single extension you want to work on in the `load individual extension` function. This helps avoid loading unnecessary modules, making the build process more efficient and preventing your CPU from being overworked.
+To adjust which modules are loaded, make adjustments to the `settings.gradle.kts` file as needed. Comment out `loadAllIndividualExtensions()` and uncomment `loadIndividualExtension("<lang>", "<name>")` to specify the single extension you want to work on. This helps avoid loading unnecessary modules, making the build process more efficient and preventing your CPU from being overworked.
 
 #### Extension file structure
 
@@ -239,8 +296,7 @@ The simplest extension structure looks like this:
 ```console
 $ tree src/<lang>/<mysourcename>/
 src/<lang>/<mysourcename>/
-├── AndroidManifest.xml (optional)
-├── build.gradle
+├── build.gradle.kts
 ├── res
 │   ├── mipmap-hdpi
 │   │   └── ic_launcher.png
@@ -261,8 +317,7 @@ src/<lang>/<mysourcename>/
                         └── <mysourcename>
                             ├── <MySourceName>.kt
                             ├── <Dto>.kt (optional)
-                            ├── <Filters>.kt (optional)
-                            └── <UrlActivity>.kt (optional)
+                            └── <Filters>.kt (optional)
 
 ```
 
@@ -271,39 +326,183 @@ should be adapted from the site name, and can only contain lowercase ASCII lette
 Your extension code must be placed in the package `eu.kanade.tachiyomi.extension.<lang>.<mysourcename>`.
 
 > [!TIP]
-> Additional files in the extension package (like `Dto.kt`, `Filters.kt`, `UrlActivity.kt`)
+> Additional files in the extension package (like `Dto.kt`, `Filters.kt`)
 > should NOT repeat the extension name (e.g. use `Dto.kt` instead of `MySourceNameDto.kt`).
 > Note: While older extensions might use the repeated name pattern, avoiding it is a newly enforced convention to maintain consistency across the repository.
 
-#### AndroidManifest.xml (optional)
+#### build.gradle.kts
 
-You only need to create this file if you want to add deep linking to your extension.
-See [URL intent filter](#url-intent-filter) for more information.
+Extensions' `build.gradle.kts` should look like this:
 
-#### build.gradle
+```kotlin
+import io.github.keiyoushi.gradle.api.ContentWarning
 
-Make sure that your new extension's `build.gradle` file follows the following structure:
-
-```groovy
-ext {
-    extName = '<My source name>'
-    extClass = '.<MySourceName>'
-    extVersionCode = 1
-    isNsfw = true
+plugins {
+    alias(kei.plugins.extension)
 }
 
-apply from: "$rootDir/common.gradle"
+keiyoushi {
+    name = "Example" // Replace with your actual source name
+    versionCode = 1
+    contentWarning = ContentWarning.NSFW // Options: ContentWarning.SAFE, ContentWarning.MIXED, ContentWarning.NSFW
+    libVersion = "1.6"
+
+    source {
+        name = "Example" // Optional, defaults to the top-level name
+        lang = "en"
+        baseUrl = "https://example.com"
+    }
+}
 ```
 
-| Field            | Description                                                                                                                                                                            |
-|------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `extName`        | The name of the extension. Should be romanized if site name is not in English.                                                                                                         |
-| `extClass`       | Points to the class that implements `Source`. You can use a relative path starting with a dot (the package name is the base path). This is used to find and instantiate the source(s). |
-| `extVersionCode` | The extension version code. This must be a positive integer and incremented with any change to the code.                                                                               |
-| `isNsfw`         | (Optional, defaults to `false`) Flag to indicate that a source contains NSFW content.                                                                                                  |
+At least one `source {}` block is required for every extension.
 
-The extension's version name is generated automatically by concatenating `1.4` and `extVersionCode`.
-With the example used above, the version would be `1.4.1`.
+| Field            | Description                                                                                                                                                                                                                               |
+|------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `name`           | The name of the extension. Should be romanized if site name is not in English.                                                                                                                                                            |
+| `versionCode`    | The extension version code. This must be a positive integer and incremented with any change to the code. Do not bump for changes that do not affect users, such as changing a private function to a public function.                      |
+| `contentWarning` | Content safety classification. Must be set explicitly to one of `ContentWarning.SAFE`, `ContentWarning.MIXED`, or `ContentWarning.NSFW`.                                                                                                  |
+| `libVersion`     | The extension library version. Must be `"1.6"`; the source class must implement `KeiSource` (see [Extension main class](#extension-main-class)). |
+| `theme`          | Name of a multi-source theme from `lib-multisrc/` to inherit from (e.g. `"madara"`). When set, the extension's version code is `theme.baseVersionCode + versionCode`.                                                                     |
+| `pkgName`        | Overrides the application ID suffix (defaults to `<lang>.<source dir>` derived from the module path). Only needed when moving a module to a different directory - see [Moving a source to a different directory](#moving-a-source-to-a-different-directory). |
+| `source {}`      | Declares one source (or multiple, for multi-language or multi-mirror extensions) using KSP code generation. This block is mandatory. See [Source declaration](#source-declaration).                                                       |
+| `deeplink {}`    | Declares a URL deeplink intent filter. See [URL intent filter](#url-intent-filter).                                                                                                                                                       |
+
+The extension's version name is generated automatically by concatenating `libVersion` and the calculated version code.
+With the example used above, the version would be `1.6.1`.
+
+### Source declaration
+
+Sources are registered through `source {}` blocks in `build.gradle.kts`, combined with the `@Source` annotation on your source class. The build system uses KSP to generate an entry-point subclass (`keiyoushi.source.Generated`) that automatically injects `name`, `lang`, `id`, and `baseUrl`- you no longer need to declare them manually in Kotlin.
+
+#### Annotate your source class
+
+Add `@Source` to your main class and remove any manual declarations of `name`, `lang`, `id`, and `baseUrl`:
+
+```kotlin
+import keiyoushi.annotation.Source
+import keiyoushi.source.KeiSource
+
+@Source
+abstract class MySource : KeiSource() {
+    // name, lang, id, and baseUrl are injected automatically - do not declare them here.
+    // All other overrides go here as normal.
+}
+```
+
+Sources must extend `KeiSource` (with `libVersion = "1.6"`), never `HttpSource` directly; the build fails otherwise - see [Extension main class](#extension-main-class) for details.
+
+#### Declare sources in build.gradle.kts
+
+Add one or more `source {}` blocks inside `keiyoushi {}`:
+
+```kotlin
+keiyoushi {
+    name = "My Source"
+    versionCode = 1
+    contentWarning = ContentWarning.SAFE
+    libVersion = "1.6"
+
+    source {
+        lang = "en"
+        baseUrl = "https://example.com"
+    }
+}
+```
+
+| Field         | Description                                                                                                                                                                                                                                                                                                                                              |
+|---------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `name`        | The source name shown in the app. Optional; defaults to the top-level extension `name`.                                                                                                                                                                                                                                                                  |
+| `lang`        | ISO 639-1 language code. Required.                                                                                                                                                                                                                                                                                                                       |
+| `baseUrl`     | The source's base URL. See [baseUrl modes](#baseurl-modes) below.                                                                                                                                                                                                                                                                                        |
+| `id`          | Explicit source ID. Optional; auto-computed from `name + lang + versionId` if omitted. Set this explicitly in the `source {}` block (never in the source class) when renaming a source to preserve users' libraries.                                                                                                    |
+| `versionId`   | Integer used as a seed for auto-computing `id`. Defaults to `1`. Only bump this if the source's URL structure fundamentally changes and old entries can no longer be redirected.                                                                                                                                                                         |
+
+A source class may compute `name` and/or `baseUrl` itself by declaring `override val name` / `override val baseUrl`; codegen detects the override and skips generating that property (the DSL value is then used only for metadata such as the repo index and deeplink hosts). **This is discouraged** — prefer letting the DSL own `name` and `baseUrl`, and only override them in the source class when you have a very specific reason. `baseUrl` may only be overridden when the DSL declares a plain static `baseUrl` — the `mirrors`/`custom` modes generate preference infrastructure and cannot be hand-overridden. `id`, `lang`, and `versionId` are strictly owned by the DSL/codegen; overriding them in the source class throws a fatal KSP compiler error.
+
+#### baseUrl modes
+
+The `baseUrl` field inside `source {}` supports three modes:
+
+**Static** (single URL, no preferences UI):
+
+```kotlin
+source {
+    lang = "en"
+    baseUrl = "https://example.com"
+}
+```
+
+**Mirrors** (user picks a mirror from a list - preference UI is generated automatically):
+
+```kotlin
+source {
+    lang = "en"
+    baseUrl {
+        mirrors(
+            "https://example.com",
+            "https://mirror1.com",
+            "https://mirror2.com",
+        )
+    }
+}
+```
+
+The first url is the default; each mirror's host is shown in the picker. To show custom labels instead, pass `"label" to "url"` pairs — either all urls are naked or all are labeled, not a mix:
+
+```kotlin
+baseUrl {
+    mirrors(
+        "Main" to "https://example.com",
+        "Mirror" to "https://mirror1.com",
+    )
+}
+```
+
+The extension automatically implements `ConfigurableSource` and adds a "Preferred mirror" `ListPreference` to the settings screen. You do not need to write any `SharedPreferences` code or add `setupPreferenceScreen`. If your class already implements `ConfigurableSource`, `super.setupPreferenceScreen(screen)` is called so your own preferences are preserved.
+
+**Custom URL** (user can enter any URL - preference UI with validation is generated automatically):
+
+```kotlin
+source {
+    lang = "en"
+    baseUrl {
+        custom("https://example.com")
+    }
+}
+```
+
+Like `mirrors`, the extension automatically implements `ConfigurableSource` and adds a validated "Custom base URL" `EditTextPreference`. The default URL is restored automatically if the hardcoded default changes in a future update.
+
+> [!IMPORTANT]
+> When using `mirrors(...)` or `custom(...)`, **do not** implement mirror/URL selection manually in your class using `SharedPreferences` or a `ListPreference` - the generated code handles it. Doing both will create duplicate preferences.
+
+#### Multiple sources from one class
+
+To expose multiple sources (previously done with `SourceFactory`), add multiple `source {}` blocks. Each block generates an anonymous inner class that subclasses your `@Source` class:
+
+```kotlin
+keiyoushi {
+    name = "Example"
+    versionCode = 1
+    contentWarning = ContentWarning.SAFE
+    libVersion = "1.6"
+
+    source {
+        name = "Example EN"
+        lang = "en"
+        baseUrl = "https://en.example.com"
+    }
+
+    source {
+        name = "Example JP"
+        lang = "ja"
+        baseUrl = "https://jp.example.com"
+    }
+}
+```
+
+The generated `keiyoushi.source.Generated` class implements `SourceFactory` automatically. You do not need to implement `SourceFactory` yourself.
 
 ### Core dependencies
 
@@ -317,39 +516,54 @@ Referencing the actual implementation will help with understanding extensions' c
 #### lib tools
 
 The `lib/` directory contains reusable Gradle modules that solve common problems shared across
-multiple extensions, such as cookie injection, image descrambling, JavaScript deobfuscation, and
-more. Before implementing something from scratch, check whether an existing lib already covers your
-use case. Each lib is self-documented via KDoc comments and/or a README in its own folder.
+multiple extensions, such as image descrambling, JavaScript deobfuscation, and more. Before
+implementing something from scratch, check whether an existing lib already covers your
+use case. Each lib is self-documented via KDoc comments in its Kotlin source files.
 
 #### Available libs
 
-| Module                                                                                                    | Description                                                          |
-|-----------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------|
-| [`lib-cookieinterceptor`](https://github.com/keiyoushi/extensions-source/tree/main/lib/cookieinterceptor) | Injects cookies into OkHttp requests for a given domain              |
-| [`lib-cryptoaes`](https://github.com/keiyoushi/extensions-source/tree/main/lib/cryptoaes)                 | AES-CBC decryption compatible with CryptoJS; JSFuck deobfuscation    |
-| [`lib-randomua`](https://github.com/keiyoushi/extensions-source/tree/main/lib/randomua)                   | Fetches and rotates real-world User-Agent strings                    |
-| [`lib-synchrony`](https://github.com/keiyoushi/extensions-source/tree/main/lib/synchrony)                 | JavaScript deobfuscation via the Synchrony engine (QuickJS sandbox)  |
-| [`lib-textinterceptor`](https://github.com/keiyoushi/extensions-source/tree/main/lib/textinterceptor)     | Renders plain text or HTML as a PNG image page                       |
-| [`lib-unpacker`](https://github.com/keiyoushi/extensions-source/tree/main/lib/unpacker)                   | Unpacks Dean Edwards-packed JavaScript; substring extraction helpers |
+| Module                                                                                                    | Description                                                                             |
+|-----------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
+| [`lib-aessiv`](https://github.com/keiyoushi/extensions-source/tree/main/lib/aessiv)                       | AES-SIV (RFC 5297) and AES-GCM-SIV (RFC 8452) AEAD decryption                           |
+| [`lib-cronet`](https://github.com/keiyoushi/extensions-source/tree/main/lib/cronet)                       | Sends requests through the device's Cronet, for Chrome's TLS and HTTP/2                 |
+| [`lib-dataimage`](https://github.com/keiyoushi/extensions-source/tree/main/lib/dataimage)                 | Decodes base64 `data:image` strings into mock URLs that OkHttp can handle               |
+| [`lib-e4p`](https://github.com/keiyoushi/extensions-source/tree/main/lib/e4p)                             | Decodes and decrypts E4P-format manga page archives (TIFF/XEBP)                         |
+| [`lib-ece`](https://github.com/keiyoushi/extensions-source/tree/main/lib/ece)                             | RFC 8188 `aes128gcm` decryption, HKDF key derivation, and P-256 raw point helpers       |
+| [`lib-i18n`](https://github.com/keiyoushi/extensions-source/tree/main/lib/i18n)                           | Internationalization helper (`Intl`) for multi-language UI strings in extensions        |
+| [`lib-imagedecoder`](https://github.com/keiyoushi/extensions-source/tree/main/lib/imagedecoder)           | Decodes images to a `Bitmap` with the host app's decoder (AVIF, JPEG XL, HEIF)          |
+| [`lib-lzstring`](https://github.com/keiyoushi/extensions-source/tree/main/lib/lzstring)                   | LZ-String decompression and compression                                                 |
+| [`lib-publus`](https://github.com/keiyoushi/extensions-source/tree/main/lib/publus)                       | Handles Publus DRM-protected reader decryption, unscrambling, and page loading          |
+| [`lib-randomua`](https://github.com/keiyoushi/extensions-source/tree/main/lib/randomua)                   | Fetches and rotates real-world User-Agent strings (requires overriding `getMangaUrl()`) |
+| [`lib-secretstream`](https://github.com/keiyoushi/extensions-source/tree/main/lib/secretstream)           | ChaCha20/Poly1305/X25519 cryptography for secret-stream encrypted sources               |
+| [`lib-speedbinb`](https://github.com/keiyoushi/extensions-source/tree/main/lib/speedbinb)                 | Processes, decrypts, and descrambles SpeedBinb reader payloads                          |
+| [`lib-synchrony`](https://github.com/keiyoushi/extensions-source/tree/main/lib/synchrony)                 | JavaScript deobfuscation via the Synchrony engine (QuickJS sandbox)                     |
+| [`lib-textinterceptor`](https://github.com/keiyoushi/extensions-source/tree/main/lib/textinterceptor)     | Renders plain text or HTML as a PNG image page                                          |
+| [`lib-unpacker`](https://github.com/keiyoushi/extensions-source/tree/main/lib/unpacker)                   | Unpacks Dean Edwards-packed JavaScript; substring extraction helpers                    |
+
+> [!IMPORTANT]
+> If your module uses `:lib:randomua`, the Spotless check requires your extension to override the `getMangaUrl()` method in your main class, or the build will fail.
 
 > [!NOTE]
-> The table above highlights the most commonly used libraries. Check the `lib/` directory for the full list of available modules and their specific READMEs.
+> The table above highlights the most commonly used libraries. Check the `lib/` directory for the full list of available modules and their source files.
 
 #### Adding a lib dependency
 
-Declare the module in your extension's `build.gradle`:
+Declare the module in your extension's `build.gradle.kts`:
 
-```groovy
+```kotlin
 dependencies {
-    implementation(project(':lib:<name>'))
+    implementation(project(":lib:<name>"))
 }
 ```
 
+> [!TIP]
+> For multi-source themes in `lib-multisrc/`, use `api()` instead of `implementation()` so the dependency is transitively available to all extensions using the theme.
+
 For example:
 
-```groovy
+```kotlin
 dependencies {
-    implementation(project(':lib:dataimage'))
+    implementation(project(":lib:dataimage"))
 }
 ```
 
@@ -373,11 +587,11 @@ lib/<mylibname>/
                 └── MyLib.kt
 ```
 
-The `build.gradle.kts` must apply the `lib-android` plugin:
+The `build.gradle.kts` must apply the `kei.plugins.library` plugin:
 
 ```kotlin
 plugins {
-    id("lib-android")
+    alias(kei.plugins.library)
 }
 ```
 
@@ -385,11 +599,11 @@ If your lib depends on another lib, declare it in the same file:
 
 ```kotlin
 plugins {
-    id("lib-android")
+    alias(kei.plugins.library)
 }
 
 dependencies {
-    implementation(project(":lib:<other-lib>"))
+    implementation(project(":lib:other-lib")) // Replace with the actual other library name
 }
 ```
 
@@ -421,11 +635,12 @@ val dto = response.parseAs<MyDto> { it.substringAfter("callback(").dropLast(1) }
 
 **Do not** create a local `private val json: Json by injectLazy()` unless you specifically need a custom JSON configuration (e.g., `isLenient = true` or custom serializers). For standard parsing, the global instance is already available via `jsonInstance` and the `parseAs` helpers use it automatically.
 
-##### JSON serialization - `toJsonString` / `toJsonRequestBody`
+##### JSON serialization - `toJsonString` / `toJsonRequestBody` / `toJsonElement`
 
-Use `keiyoushi.utils.toJsonString` to serialize an object to a JSON string. If you are sending a POST/PUT request, use `keiyoushi.utils.toJsonRequestBody` to directly convert your object into an OkHttp `RequestBody` with the correct `application/json` media type.
+Use `keiyoushi.utils.toJsonString` to serialize an object to a JSON string. If you are sending a POST/PUT request, use `keiyoushi.utils.toJsonRequestBody` to directly convert your object into an OkHttp `RequestBody` with the correct `application/json` media type. Use `keiyoushi.utils.toJsonElement` to convert any `@Serializable` object directly into a `JsonElement`.
 
 ```kotlin
+import keiyoushi.utils.toJsonElement
 import keiyoushi.utils.toJsonRequestBody
 import keiyoushi.utils.toJsonString
 
@@ -434,13 +649,16 @@ val body = myRequestDto.toJsonRequestBody()
 
 // To a simple String:
 val jsonString = myRequestDto.toJsonString()
+
+// To a JsonElement:
+val element = myRequestDto.toJsonElement()
 ```
 
 ##### JSON models (DTOs) and serialization
 
 When defining `@Serializable` classes for JSON parsing, **do not** use `data class` unless you actually need data class features (like `copy()` or destructuring). Use a regular `class` instead to reduce the generated bytecode size.
 
-Always use camelCase for Kotlin properties. Only use `@SerialName` when the JSON key does not match the property name (e.g., mapping a snake_case JSON key like `cover_img` to `coverImg`, or an invalid Kotlin identifier like `_count` to `count`). If the JSON key already matches the property name exactly, `@SerialName` is redundant and should be omitted. It is also recommended to make fields `private` if they are only used internally (for instance, when mapping directly to `SManga` or `SChapter` within the DTO).
+Always use camelCase for Kotlin properties, except when mapping to external model properties that use snake_case (e.g., `thumbnail_url` in `SManga` or `date_upload` in `SChapter`). Only use `@SerialName` when the JSON key does not match the property name (e.g., mapping a snake_case JSON key like `cover_img` to `coverImg`, or an invalid Kotlin identifier like `_count` to `count`). If the JSON key already matches the property name exactly, `@SerialName` is redundant and should be omitted. It is also recommended to make fields `private` if they are only used internally (for instance, when mapping directly to `SManga` or `SChapter` within the DTO).
 
 ```kotlin
 import kotlinx.serialization.SerialName
@@ -466,51 +684,241 @@ class MyDto(
 }
 ```
 
-##### Protobuf parsing and serialization — `parseAsProto` / `toRequestBodyProto`
+- **Use `@Serializable` classes instead of `JsonObject`:** Do not manually traverse `JsonObject` or `JsonArray`. Define `@Serializable` classes and use `parseAs<T>()`.
+- **Map only used fields:** Do not map all fields from the JSON response in your DTOs if they are not used. Omit unused fields to keep the class clean and reduce bytecode.
+- **Mandatory fields should not have defaults:** Do not provide default empty/null values to mandatory fields (like a manga's ID or title) in DTOs just to avoid parsing exceptions. Let the parser fail early so broken entries are detected.
+- **Avoid `buildJsonObject` for requests:** Instead of manually building `JsonObject` with `buildJsonObject { put(...) }`, define a `@Serializable` request DTO class and use `toJsonRequestBody()`.
+- **Avoid manual JSON string reading:** Avoid manually reading the response body as a string to parse JSON (e.g., `response.body.string()` or `response.peekBody(Long.MAX_VALUE).string()` outside of interceptors). Use `response.parseAs<T>()` directly, which handles efficient stream decoding and automatically closes the response body.
+
+##### Protobuf parsing and serialization - `parseAsProto` / `toRequestBodyProto`
 
 If a source's API uses Protocol Buffers (Protobuf) instead of JSON, use the `keiyoushi.utils` helpers to decode and encode the data. These extensions use a shared `protoInstance` and automatically handle resource management.
 
 ```kotlin
+import keiyoushi.utils.decodeProtoBase64
+import keiyoushi.utils.encodeProtoBase64
 import keiyoushi.utils.parseAsProto
 import keiyoushi.utils.toRequestBodyProto
-import keiyoushi.utils.decodeProtoBase64
 
 // From a Response (automatically closes the body):
 val dto = response.parseAsProto<MyProtoDto>()
 
-// From a Response with a transform applied before decoding:
-val dto = response.parseAsProto<MyProtoDto> { bytes -> bytes.drop(4).toByteArray() }
+// From a Response with a transform applied before decoding (e.g. skipping a 4-byte prefix):
+val dto = response.parseAsProto<MyProtoDto> { source ->
+    source.skip(4L)
+    source
+}
 
 // Decoding a Base64-encoded Protobuf string:
 val dto = base64String.decodeProtoBase64<MyProtoDto>()
 
+// Encoding an object to a Base64-encoded Protobuf string:
+val base64String = myDto.encodeProtoBase64()
+
 // Creating a RequestBody for a POST request (defaults to application/protobuf):
 val requestBody = myRequestDto.toRequestBodyProto()
-````
+```
 
 If you only need to work with raw bytes, you can also use `.decodeProto()` and `.encodeProto()` directly on a `ByteArray`.
 
 Do not create a local `private val proto: ProtoBuf by injectLazy()` unless you specifically need a custom configuration. For standard parsing, the global instance is already available and the `parseAsProto` helpers use it automatically.
 
-##### Date parsing - `tryParse`
+##### Date parsing - `tryParse` helpers
 
-Use `keiyoushi.utils.tryParse` on a `SimpleDateFormat` instance to safely parse a date string.
-It returns `0L` on failure or when the input is `null`, which is exactly what the app expects.
+Use the date helpers from `keiyoushi.utils` instead of parsing dates manually. They accept nullable
+strings, return epoch milliseconds, and return `0L` when parsing fails.
+
+For a self-describing ISO-8601 instant, such as `2024-01-06T00:00:00Z` or
+the equivalent `2024-01-06T01:00:00+01:00`, use the `kotlin.time` helper:
 
 ```kotlin
 import keiyoushi.utils.tryParse
+import kotlin.time.Instant
 
-// Declare dateFormat at class/file level - creating SimpleDateFormat is expensive:
-private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT).apply {
-    timeZone = TimeZone.getTimeZone("UTC")
-}
-
-chapter.date_upload = dateFormat.tryParse(dateStr)
+chapter.date_upload = Instant.tryParse(dateStr)
 ```
 
-**Do not** write manual try/catch blocks or null-guards around `SimpleDateFormat.parse()` -
-`tryParse` handles both. Also, always declare your `SimpleDateFormat` as a class-level or
-file-level `val` so it is not reconstructed for every chapter.
+For a site-specific format, declare a `java.time.format.DateTimeFormatter` at class or file level and
+use the helper that matches the information in the input:
+
+- `tryParseDate` for a date without a time. It resolves to the start of the day in the supplied zone.
+- `tryParseDateTime` for a local date and time whose zone is supplied separately.
+- `tryParseZonedDateTime` when the parsed text contains the offset or zone that should determine the
+  instant.
+
+```kotlin
+import keiyoushi.utils.tryParseDate
+import keiyoushi.utils.tryParseDateTime
+import keiyoushi.utils.tryParseZonedDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+
+private val dateFormat = DateTimeFormatter.ofPattern("dd MMM yyyy", Locale.ENGLISH)
+private val dateTimeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+private val zonedDateTimeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssXXX")
+
+chapter.date_upload = dateFormat.tryParseDate(dateStr, ZoneId.of("Europe/London"))
+chapter.date_upload = dateTimeFormat.tryParseDateTime(dateStr, ZoneId.of("Asia/Tokyo"))
+chapter.date_upload = zonedDateTimeFormat.tryParseZonedDateTime(dateStr)
+```
+
+The date and local date-time helpers default to `ZoneId.systemDefault()`. Pass an explicit zone when
+the site's zone is known so results do not depend on the user's device. Use the appropriate `Locale`
+when a pattern contains locale-sensitive text such as month names. Offset and zone pattern letters
+must not be quoted; for example, use `XXX`, not a literal `'Z'`, when calling
+`tryParseZonedDateTime`.
+
+Do not use `SimpleDateFormat` for new code. Its `keiyoushi.utils.tryParse` overload is deprecated in
+favor of these `kotlin.time` and `java.time` helpers.
+
+##### HTTP requests - `OkHttpClient.get` / `post` / `put` / `head`
+
+Always make requests with the `keiyoushi.network` suspend extensions on `OkHttpClient` - `get`,
+`post`, `put`, and `head`. Use them for every request inside your `KeiSource` suspend functions
+(`getPopularManga`, `getSearchMangaList`, `fetchMangaUpdate`, `getPageList`, etc.) instead of
+building a `Request` and calling `client.newCall(request).execute()`/`.await()` by hand.
+
+`get` and `post` take a `Fetch`, which sends the headers a browser sends for that kind of request (see
+[Browser headers](#browser-headers)). Pick the one named after the filter the site's own request shows under in the
+browser's DevTools Network tab:
+
+| DevTools filter | `Fetch`          | For                                                            |
+|-----------------|------------------|----------------------------------------------------------------|
+| Doc             | `Fetch.DOCUMENT` | opening a page; submitting a form                              |
+| Fetch/XHR       | `Fetch.XHR`      | JSON APIs, ajax, GraphQL                                       |
+| JS              | `Fetch.SCRIPT`   | reading a script, e.g. for an API key                          |
+| Img             | `Fetch.IMAGE`    | images                                                         |
+| -               | `Fetch.NONE`     | only when the request has to go out as built                   |
+
+```kotlin
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.network.post
+
+// Inside a source, headers can be omitted - your own `headers` are used automatically:
+val document = client.get("$baseUrl/series/$slug", Fetch.DOCUMENT).asJsoup()
+val results = client.get("$baseUrl/api/search?q=$query", Fetch.XHR).parseAs<SearchDto>()
+
+// The page the request comes from, e.g. the chapter page for the reader's calls:
+val pages = client.get("$apiUrl/chapter/$id", Fetch.XHR.from(getChapterUrl(chapter))).parseAs<PagesDto>()
+
+// With other headers, and a request body:
+val response = client.post("$baseUrl/api/search", apiHeaders, Fetch.XHR, body)
+```
+
+- `url` may be a `String` or an `HttpUrl`.
+- `ensureSuccess` (default `true`) throws if the response isn't 2xx; pass `ensureSuccess = false` to inspect non-2xx
+  responses yourself.
+- `get`/`head` also take a `cacheControl` (defaults to a 10-minute max-age).
+- `from` is the page the request comes from; a path is resolved against `baseUrl`. It goes out as `Referer` the way
+  browsers send it: in full to the same origin, as the origin elsewhere, and not at all from https to http.
+- Always wrap the returned `Response` in `response.use { ... }` or consume it with `parseAs`/`asJsoup`, which close it
+  for you.
+- With a `User-Agent` that names neither Chrome nor Firefox (an app's own API client) no browser headers are added,
+  so a `Fetch` is fine there too.
+- `get` and `post` always take a `Fetch`; pass `Fetch.NONE` for a request that has to go out as built. `put` and
+  `head` send it as built.
+- For a request the helpers don't cover (another method, or one built from another request), build the `Request`
+  yourself and send it with `client.call(request)`, which takes `ensureSuccess` too. It goes out as built unless you
+  set a `Fetch` on the builder with `.fetch(Fetch.XHR)` and so on.
+
+##### Rate limiting - `rateLimit`
+
+To prevent IP bans and respect source server capacity, configure client rate limiting via `OkHttpClient.Builder.configureClient()` using `keiyoushi.network.rateLimit`:
+
+```kotlin
+import keiyoushi.network.rateLimit
+import kotlin.time.Duration.Companion.seconds
+
+override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder =
+    rateLimit(permits = 2, period = 1.seconds)
+```
+
+- `permits`: Number of requests allowed within the sliding window `period`.
+- `period`: Duration of the sliding window (defaults to `1.seconds`).
+- `interval`: Optional minimum delay between consecutive request dispatches to smooth burst traffic (defaults to `Duration.ZERO`).
+- `shouldLimit`: Optional predicate `(HttpUrl) -> Boolean` to restrict rate limiting to specific hosts or paths. Multiple `rateLimit` rules can be chained, evaluated in definition order:
+
+```kotlin
+override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder =
+    rateLimit(permits = 2, period = 1.seconds) { it.host == "api.example.com" }
+        .rateLimit(permits = 10, period = 1.seconds) { it.host == "img.example.com" }
+```
+
+##### Custom cookies - `addCookie`
+
+Use `keiyoushi.network.addCookie` on an `OkHttpClient.Builder` (inside `configureClient()`) to inject custom cookies while
+preserving unrelated cookies already attached to the request. If the request already contains a
+cookie with the same name, the configured value replaces it. Inside a `KeiSource`, the domain
+defaults to the source's current `baseUrl` and is resolved again for every request, so generated
+mirror and custom-URL preferences keep working after a runtime change:
+
+```kotlin
+import keiyoushi.network.addCookie
+
+override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder =
+    addCookie(
+        listOf(
+            "adult" to "1",
+            "reader" to "web",
+            "quality" to "high",
+        ),
+    )
+```
+
+Pass a lambda when cookie values must also be resolved for every request:
+
+```kotlin
+override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder =
+    addCookie { listOf("locale" to localePreference()) }
+```
+
+For a domain unrelated to `baseUrl`, pass a domain lambda. Calls can be chained to configure
+multiple domains; configurations are checked in call order and the first matching domain is used:
+
+```kotlin
+override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder =
+    addCookie("site-cookie" to "1")
+        .addCookie({ apiUrl.toHttpUrl().host }, "api-cookie" to "1")
+```
+
+Do not manually set the `Cookie` header for this purpose. Doing so replaces all existing cookies,
+including Cloudflare cookies set through WebView, which can break login and challenge solving.
+
+##### WebView execution - `runWebView` / `getLocalStorage`
+
+When a source needs a real browser environment (e.g. to solve a JS challenge, run obfuscated
+client-side code, or read a token out of `localStorage`), use `keiyoushi.utils.runWebView` instead
+of instantiating a `WebView` manually.
+
+```kotlin
+import keiyoushi.utils.runWebView
+
+val html = runWebView<String> {
+    onPageFinished { url ->
+        evaluateJs("document.documentElement.outerHTML") { html ->
+            resolve(html)
+        }
+    }
+    loadUrl(targetUrl)
+}
+```
+
+- `runWebView(timeout, configure)` suspends until `resolve`/`reject` is called inside `configure`, or `timeout` (default 30s) elapses; it always runs on the main thread internally.
+- The `WebViewScope` DSL exposes:
+  - **Settings:** `javaScriptEnabled`, `domStorageEnabled`, `blockImages`, `useWideViewPort`, `loadWithOverviewMode`, `userAgent` (spoofs matching `Sec-CH-UA` client hints on Chromium 119+), and `includeCookiesOnIntercept` (Chromium 138+; includes the `Cookie` header in requests passed to `interceptRequest`, and accepts `Set-Cookie` from responses it returns). Audio is always muted automatically across all `runWebView` instances (Chromium 122+).
+  - **Navigation hooks:** `onPageStarted`, `onPageFinished`, `onReceivedError`.
+  - **Request interception:** `interceptRequest` to inspect/replace/block resource loads (runs on a background thread).
+  - **Pre-DOM JavaScript Injection** (like the bridges below, call these before `loadUrl`/`loadData`; they only apply to later navigations):
+    - `injectAtDocumentStart(script, allowedOriginRules)`: Injects JavaScript before any page or inline script runs on matching origins. Returns a `ScriptHandle` with `.remove()` to cancel future injections. Essential for hooking APIs (`window.fetch`, `XMLHttpRequest`, `WebSocket`, etc.) before anti-bot scripts execute. Requires Chromium 91+; on older engines (< Chromium 91), falls back to `onPageStarted` injection with debug logging - the fallback only reaches the main frame and may run after inline scripts.
+    - `addJavaScriptOnEvent(script, event, worldName, allowedOriginRules)`: Injects on `InjectionEvent.DOCUMENT_START` (default) or `InjectionEvent.DOCUMENT_END`, optionally targeting an isolated execution `worldName`. **Requires Chromium 146+**; has **no fallback** and immediately fails (`reject`s) on older engines.
+  - **JavaScript Bridges:**
+    - `webMessageBridge(name, allowedOriginRules, handler)`: Modern, asynchronous, origin-scoped 2-way message bridge (`window.<name>.postMessage(msg)` and `window.<name>.onmessage`). The handler receives `(message, replyProxy)` where `replyProxy.postMessage(reply)` and `replyProxy.evaluateJs(script)` can interact with the sender frame, and `replyProxy.sourceOrigin`/`replyProxy.isMainFrame` identify it. A simplified `(message) -> Unit` overload is also available. The handler runs on the main thread. The default `allowedOriginRules` of `*` lets every frame (including third-party iframes) post messages, so restrict it to the expected origin (e.g. `setOf("https://example.com")`) whenever a message can complete the run. Requires Chromium 82+ (`replyProxy.evaluateJs` requires Chromium 146+ and rejects otherwise); on legacy WebView engines (< Chromium 82), transparently falls back to an `addJavascriptInterface` bridge exposing `window.<name>.postMessage(message)` with debug logging (replying via `replyProxy` is unsupported on the fallback path and rejects; origin rules are ignored and the sender origin is null).
+    - `jsBridge(name, handler)`: Deprecated legacy synchronous bridge exposing `window.<name>.post(message)`. Supported on all Android versions. Use `webMessageBridge` instead.
+  - **Execution & Navigation:** `loadUrl`, `loadData`, `stopLoading`, `evaluateJs`, and `poll(interval)` to repeat checks on the main thread until resolved.
+- For the common case of just reading a `localStorage` value after loading a page, use the ready-made `getLocalStorage(url, key)` helper instead of writing your own `runWebView` call.
+- `runWebViewBlocking(call, ...)` exists for non-suspend call sites (e.g. inside an OkHttp interceptor where you must pass the interceptor's chain.call()) - only use it there, never from a suspend function.
 
 ##### Filter helpers - `firstInstance` / `firstInstanceOrNull`
 
@@ -523,20 +931,26 @@ import keiyoushi.utils.firstInstanceOrNull
 val genreFilter = filters.firstInstanceOrNull<GenreFilter>()
 ```
 
-**SharedPreferences - `getPreferences` / `getPreferencesLazy`**
+##### SharedPreferences - `getPreferences` / `getPreferencesLazy`
 
-Use these instead of accessing `Injekt` manually.
+Use these instead of accessing `Injekt` manually. Both accept an optional `migration: SharedPreferences.() -> Unit` lambda that executes on the `SharedPreferences` instance upon initialization, allowing you to migrate old keys cleanly:
 
 ```kotlin
 import keiyoushi.utils.getPreferences
 import keiyoushi.utils.getPreferencesLazy
 
-// Eager:
-private val preferences = getPreferences()
-
-// Lazy (recommended for most cases):
-private val preferences by getPreferencesLazy()
+// Inside your KeiSource / HttpSource class:
+private val preferences by getPreferencesLazy {
+    // Optional migration block executed on initialization:
+    val oldSetting = getString("old_key", null)
+    if (oldSetting != null) {
+        edit().putString("new_key", oldSetting).remove("old_key").apply()
+    }
+}
 ```
+
+> [!NOTE]
+> `getPreferences()` and `getPreferencesLazy()` are extension functions on `HttpSource`. If you need to access preferences from a context without a source receiver (e.g. inside a helper class), use the top-level `getPreferences(sourceId)` function instead.
 
 ##### Next.js data extraction - `extractNextJs` / `extractNextJsRsc`
 
@@ -555,17 +969,342 @@ val data = document.extractNextJs<MyDto> { element ->
 ```
 
 For client-side navigation responses (`text/x-component` content type), pass the `rsc: 1`
-request header and use `extractNextJsRsc` on the response body string.
-See [#14266](https://github.com/keiyoushi/extensions-source/pull/14266) and
-[#14446](https://github.com/keiyoushi/extensions-source/pull/14446) for real-world usage.
+request header. You can call `response.extractNextJs<T>()` directly on the `Response` object;
+the utility automatically inspects the `Content-Type` header and safely routes to `extractNextJsRsc`
+for you without needing to manually extract the response body string.
 
 ##### Extracting URLs - `setUrlWithoutDomain` + `absUrl`
 
 When extracting URLs from HTML, prefer `element.absUrl("href")` or `element.attr("abs:href")` over manually concatenating `baseUrl` + `path`. Combined with `setUrlWithoutDomain()`, this safely handles both absolute and relative links.
 
+```kotlin
+// Risky - setUrlWithoutDomain cannot resolve all relative URLs:
+setUrlWithoutDomain(element.attr("href"))
+// Safe:
+setUrlWithoutDomain(element.absUrl("href"))
+```
+
+##### GraphQL Requests - `graphQLBody` / `parseGraphQLAs`
+
+If a source uses a GraphQL API, use the dedicated `keiyoushi.utils` helpers to build requests and
+parse responses. These utilities automatically serialize variables, encode payload structures, and
+throw a `GraphQLException` if the response contains GraphQL errors.
+
+```kotlin
+import keiyoushi.utils.graphQLBody
+import keiyoushi.utils.parseGraphQLAs
+
+// Define your variables as a @Serializable class
+val variables = MyVariablesDto(page = 1)
+
+// Build the POST RequestBody:
+val body = graphQLBody(
+    query = $$"""
+    query SearchManga($page: Int!) {
+      mangas(page: $page) {
+        id
+      }
+    }
+    """,
+    operationName = "SearchManga",
+    variables = variables, // supports @Serializable types or JsonElement
+)
+val response = client.post("$baseUrl/graphql", headers, Fetch.XHR, body)
+
+// Parsing the response (automatically extracts the "data" object):
+val data = response.parseGraphQLAs<MyResponseDto>()
+```
+
+Inside a `KeiSource`, build the payload with `graphQLBody` and send it with
+[`client.post`](#http-requests---okhttpclientget--post--put--head):
+
+```kotlin
+val data = client.post(
+    url = "$baseUrl/graphql",
+    fetch = Fetch.XHR,
+    body = graphQLBody(
+        operationName = "SearchManga",
+        query = SEARCH_QUERY,
+        variables = variables,
+    ),
+).parseGraphQLAs<MyResponseDto>()
+```
+
+##### GraphQL GET requests - `graphQLGet`
+
+For sources that send GraphQL over HTTP GET instead of POST, use `graphQLGet`:
+
+```kotlin
+import keiyoushi.utils.graphQLGet
+
+val request = graphQLGet(
+    url = "$baseUrl/graphql",
+    headers = headers,
+    query = $$"""
+    query SearchManga($page: Int!) {
+      mangas(page: $page) {
+        id
+      }
+    }
+    """,
+    variables = variables
+)
+```
+
+Inside a `KeiSource`, use the suspend `OkHttpClient` overload instead: it sends the request and
+returns the `Response`, taking the source's own `headers` when none are passed. `ensureSuccess`
+behaves as in [HTTP requests](#http-requests---okhttpclientget--post--put--head), and it
+additionally takes a `cacheControl`, defaulting to a 10-minute max-age, and a required `fetch`, passed by name.
+
+```kotlin
+val data = client.graphQLGet(
+    url = "$baseUrl/graphql",
+    operationName = "SearchManga",
+    query = SEARCH_QUERY,
+    variables = variables,
+    fetch = Fetch.XHR,
+).parseGraphQLAs<MyResponseDto>()
+```
+
+For sources that use [Automatic Persisted Queries (APQ)](https://www.apollographql.com/docs/kotlin/advanced/persisted-queries/), pass the result of `persistedQueryExtension(sha256Hash)` as the `extensions` parameter and omit `query`:
+
+```kotlin
+import keiyoushi.utils.graphQLBody
+import keiyoushi.utils.persistedQueryExtension
+
+val body = graphQLBody(
+    operationName = "SearchManga",
+    variables = variables,
+    extensions = persistedQueryExtension("abc123sha256...")
+)
+val response = client.post("$baseUrl/graphql", headers, Fetch.XHR, body)
+```
+
+Add `GraphQLErrorInterceptor` to the `OkHttpClient` to also convert a non-2xx response carrying a GraphQL error payload into a `GraphQLException` instead of a generic HTTP error. It only inspects non-2xx responses - a 200 OK response whose body contains a GraphQL `errors` array is not covered by the interceptor, so you still need `parseGraphQLAs`/`response.parseGraphQLAs<T>()` to catch that common case:
+
+```kotlin
+import keiyoushi.utils.GraphQLErrorInterceptor
+
+override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder =
+    addInterceptor(GraphQLErrorInterceptor())
+```
+
+##### JsonElement accessor helpers
+
+`keiyoushi.utils` provides concise read-only accessors for traversing raw `JsonElement` trees. Import individually as needed:
+
+```kotlin
+import keiyoushi.utils.array
+import keiyoushi.utils.boolean
+import keiyoushi.utils.booleanOrNull
+import keiyoushi.utils.get
+import keiyoushi.utils.getArray
+import keiyoushi.utils.getArrayOrNull
+import keiyoushi.utils.getObject
+import keiyoushi.utils.getObjectOrNull
+import keiyoushi.utils.int
+import keiyoushi.utils.intOrNull
+import keiyoushi.utils.long
+import keiyoushi.utils.longOrNull
+import keiyoushi.utils.obj
+import keiyoushi.utils.string
+import keiyoushi.utils.stringOrNull
+
+val root: JsonElement = response.parseAs()
+
+// Accessing fields and array indices:
+val title = root["data"]["title"].string
+val count = root["data"]["count"].int
+val firstItem = root["data"]["items"][0]
+val items = root["data"]["items"].array
+val nested = root["data"]["meta"].obj
+
+// Null-safe accessors (return null when element is missing or null):
+val subtitle = root["data"]["subtitle"]?.stringOrNull
+val score = root["data"]["score"]?.intOrNull
+val id = root["data"]["id"]?.longOrNull
+val isFinished = root["data"]["is_finished"]?.booleanOrNull
+
+// JsonObject-specific array and object accessors (on a non-null JsonObject):
+val chapters = root["data"]!!.obj.getArray("chapters") // or getArrayOrNull
+val meta = root["data"]!!.obj.getObject("metadata")    // or getObjectOrNull
+```
+
+`element[key]` and `element[index]` return `JsonElement?` (null-safe). The non-null terminal accessors (`.string`, `.int`, `.long`, `.boolean`) throw if the element is null. The null-safe accessors (`.stringOrNull`, `.intOrNull`, `.longOrNull`, `.booleanOrNull`) return null instead. `JsonObject` also provides `getStringOrNull`, `getIntOrNull`, `getLongOrNull`, and `getBooleanOrNull` variants for optional fields.
+
+Prefer these over writing `element.jsonObject["key"]?.jsonPrimitive?.content` manually.
+
+##### ZIP streaming - `zipDirectoryAsync` / `readZipEntry`
+
+For sources that serve manga pages as remote ZIP archives, the `keiyoushi.zip` package lets you read the central directory and individual entries using HTTP Range requests - no need to download the entire file. Import from `keiyoushi.zip`:
+
+```kotlin
+import keiyoushi.zip.readZipEntry
+import keiyoushi.zip.zipDirectoryAsync
+import okio.buffer
+
+// 1. Fetch the ZIP central directory asynchronously:
+val directory = client.zipDirectoryAsync(zipUrl, headers)
+
+// 2. Find an entry by name and read its decompressed bytes:
+val entry = directory.entries.first { it.name == "001.jpg" }
+val imageBytes = client.readZipEntry(zipUrl, entry, headers).buffer().readByteArray()
+```
+
+`client.zipDirectoryAsync(...)` is the public `OkHttpClient` extension method that performs HTTP range requests to fetch and parse the ZIP central directory without downloading the entire file. It automatically resolves total archive size from the `Content-Range` header and handles ZIP64 archives. `readZipDirectory` is a low-level internal helper that can be used directly when the raw bytes or size have already been obtained. `client.readZipEntry` streams and decompresses only the bytes required for that one entry. Use this instead of downloading the full ZIP into a `ZipInputStream`, which forces the entire archive into memory.
+
+##### Jsoup helpers - `asJsoup` / `attrOrNull` / `textOrNull`
+
+`keiyoushi.utils` provides convenient extensions for Jsoup parsing:
+
+```kotlin
+import keiyoushi.utils.asJsoup
+import keiyoushi.utils.attrOrNull
+import keiyoushi.utils.ownTextOrNull
+import keiyoushi.utils.selectLast
+import keiyoushi.utils.textOrNull
+import org.jsoup.parser.Parser
+
+// Parse a standard HTML response (streams body and closes response):
+val doc = response.asJsoup()
+
+// Parse an HTML string resolving relative links against baseUrl:
+val doc = htmlString.asJsoup(baseUrl)
+
+// Parse an XML/RSS response with a custom parser (automatically closes response):
+val xmlDoc = response.asJsoup(Parser.xmlParser())
+
+// Null-safe attribute (returns null if attribute is missing or blank):
+val imageUrl = element.attrOrNull("data-src") ?: element.attrOrNull("src")
+
+// Select the last matching element in a query:
+val lastChapterElement = document.selectLast(".chapter-item")
+
+// Null-safe text extraction (returns null when empty):
+val title = element.textOrNull()
+val directText = element.ownTextOrNull() // excludes text of nested child elements
+```
+
+##### Cryptography - `decodeHex` / `rc4` / `xor` / AES helpers
+
+For encrypted APIs, descramblers, and image decryption:
+
+```kotlin
+import keiyoushi.network.XorInterceptor
+import keiyoushi.utils.aesCbc
+import keiyoushi.utils.aesDecrypt
+import keiyoushi.utils.aesDecryptWithPrependedIv
+import keiyoushi.utils.aesEncrypt
+import keiyoushi.utils.aesGcm
+import keiyoushi.utils.cryptoJsDecrypt
+import keiyoushi.utils.decodeHex
+import keiyoushi.utils.hmacSha256
+import keiyoushi.utils.md5
+import keiyoushi.utils.rc4
+import keiyoushi.utils.sha256
+import keiyoushi.utils.xor
+
+// Decode an even-length hex string into a ByteArray:
+val keyBytes = "616263".decodeHex()
+
+// MD5 / SHA-256 / SHA-512 digests and HMAC-SHA256 of a ByteArray or a String's UTF-8 bytes.
+// Use the stdlib toHexString() for the lowercase hex form:
+val sign = (path + API_KEY).md5().toHexString()
+val aesKey = "$userId$fileId".sha256()
+val signature = message.hmacSha256(SIGNING_KEY.encodeToByteArray()).toHexString()
+
+// Symmetric RC4 stream cipher (serves for both encryption and decryption; skip defaults to 0):
+val decrypted = cipherBytes.rc4(key = keyBytes)
+
+// Streaming XOR decryption on Response, ResponseBody, Source, or ByteArray (single-byte or cyclic multi-byte):
+val decryptedResponse = response.xor(keyBytes)
+
+// XOR image interceptor extracting decryption key from request (e.g. from URL fragment):
+client.newBuilder()
+    .addInterceptor(XorInterceptor { it.url.fragment?.decodeHex() })
+    .build()
+
+// Or with a fixed static key (ByteArray or Byte, optionally pass a request predicate):
+client.newBuilder()
+    .addInterceptor(XorInterceptor(keyBytes))
+    .build()
+
+// In-memory AES decryption / encryption:
+val decryptedBytes = ciphertext.aesDecrypt(aesCbc(key = keyBytes, iv = ivBytes))
+val encryptedBytes = plaintext.aesEncrypt(aesGcm(key = keyBytes, iv = ivBytes))
+
+// Streaming response AES decryption:
+override fun getImage(page: Page): Response {
+    val response = super.getImage(page)
+    return response.aesDecrypt(aesCbc(key = keyBytes, iv = ivBytes))
+}
+
+// CryptoJS.AES.decrypt(ciphertext, passphrase) compatible (Base64 "Salted__" payload, EVP_BytesToKey MD5).
+// Throws on failure. Use evpBytesToKey() directly for other ciphers or key sizes:
+val json = encrypted.cryptoJsDecrypt(PASSPHRASE)
+
+// Or decryption for streams with prepended IV:
+override fun getImage(page: Page): Response {
+    val response = super.getImage(page)
+    return response.aesDecryptWithPrependedIv(key = keyBytes, ivSize = 16)
+}
+```
+
+##### Binary endian helpers
+
+For binary protocols, packed streams, or custom file headers:
+
+```kotlin
+import keiyoushi.utils.readIntBigEndian
+import keiyoushi.utils.readIntLittleEndian
+import keiyoushi.utils.readLongLittleEndian
+import keiyoushi.utils.readUIntLittleEndian
+import keiyoushi.utils.readUShortBigEndian
+import keiyoushi.utils.readUShortLittleEndian
+import keiyoushi.utils.writeIntBigEndian
+import keiyoushi.utils.writeIntLittleEndian
+
+val intLE = bytes.readIntLittleEndian(offset = 0)
+val intBE = bytes.readIntBigEndian(offset = 4)
+val uShortLE = bytes.readUShortLittleEndian(offset = 8)
+val uIntLE = bytes.readUIntLittleEndian(offset = 10)
+val longLE = bytes.readLongLittleEndian(offset = 14)
+
+bytes.writeIntLittleEndian(offset = 0, value = 1234)
+bytes.writeIntBigEndian(offset = 4, value = 5678)
+```
+
+##### Decompression - `Inflater.inflate`
+
+For decompressing zlib or raw DEFLATE streams and byte arrays:
+
+```kotlin
+import keiyoushi.utils.inflate
+import okio.Source
+
+// nowrap = false (default) for standard zlib streams:
+val decompressedBuffer = source.inflate(nowrap = false) // source is an okio.Source
+val decompressedBytes = byteArray.inflate(nowrap = false)
+
+// nowrap = true for raw DEFLATE streams without zlib headers:
+val rawBytes = byteArray.inflate(nowrap = true)
+```
+
+##### SeedRandom - seeded pseudo-random generator
+
+A pure Kotlin port of David Bau's `seedrandom` (formerly in `:lib:seedrandom`, now built into `keiyoushi.utils`):
+
+```kotlin
+import keiyoushi.utils.SeedRandom
+
+val rng = SeedRandom("seed_key")
+val randomDouble = rng.nextDouble() // returns a Double in [0, 1)
+val shuffled = rng.shuffle(listOf("A", "B", "C"))
+```
+
 #### Additional dependencies
 
-If you find yourself needing additional functionality, you can add more dependencies to your `build.gradle`
+If you find yourself needing additional functionality, you can add more dependencies to your `build.gradle.kts`
 file. Many of [the dependencies](https://github.com/mihonapp/mihon/blob/main/app/build.gradle.kts)
 from the app are exposed to extensions by default.
 
@@ -574,8 +1313,11 @@ from the app are exposed to extensions by default.
 > To view which are available check the `gradle/libs.versions.toml` file.
 
 Notice that we're using `compileOnly` instead of `implementation` if the app already contains it.
-You could use `implementation` instead for a new dependency, or you prefer not to rely on whatever
+You could use `implementation` instead for a new dependency, or if you prefer not to rely on whatever
 the main app has at the expense of app size.
+
+> [!TIP]
+> Use `compileOnlyApi` (not `compileOnly`) when a dependency is provided by the app but also needs to be visible to consumers of your module (e.g. when building a theme or a library).
 
 > [!IMPORTANT]
 > Using `compileOnly` restricts you to versions that must be compatible with those used in
@@ -583,88 +1325,178 @@ the main app has at the expense of app size.
 
 ### Extension main class
 
-The class which is referenced and defined by `extClass` in `build.gradle`. This class should implement
-either `SourceFactory` or `HttpSource`.
+The class annotated with `@Source` and referenced by your `source {}` block(s). **All
+extensions must implement `KeiSource`** (`libVersion = "1.6"`), either directly or through a theme.
+A `@Source` class that extends `HttpSource` directly fails the build.
 
-| Class              | Description                                                                                                                      |
-|--------------------|----------------------------------------------------------------------------------------------------------------------------------|
-| `SourceFactory`    | Used to expose multiple `Source`s. Use this in case of a source that supports multiple languages or mirrors of the same website. |
-| `HttpSource`       | For online source, where requests are made using HTTP.                                                                           |
-| `ParsedHttpSource` | Deprecated, use `HttpSource` instead.                                                                                            |
+> [!NOTE]
+> `className` is set to `keiyoushi.source.Generated` automatically by the build system.
+
+| Class              | Description                                                                                                                                                                                     |
+|--------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `SourceFactory`    | **Obsolete.** Used to expose multiple `Source`s manually. With `source {}` blocks, this is generated automatically.                                                                             |
+| `KeiSource`        | **The base class for all online sources** (`libVersion = "1.6"`). A suspend-based API. Use this directly or extend a `KeiSource`-based theme base class. See [KeiSource](#keisource) below.     |
+| `HttpSource`       | Superclass of `KeiSource`. Do not extend it directly; `@Source` classes that do fail the build.                                                                                                 |
+| `ParsedHttpSource` | Deprecated, use `KeiSource` instead.                                                                                                                                                            |
+
+#### KeiSource
+
+`KeiSource` (package `keiyoushi.source`) is a suspend-function-based source API. Use it for every
+new source.
+
+Methods you must implement (no default - the class will not compile without them):
+
+| Method                                                                                                                               | Notes                                                                                                                                      |
+|--------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
+| `suspend fun getPopularManga(page: Int): MangasPage`                                                                                 | Make your HTTP calls with `client` (see [HTTP requests](#http-requests---okhttpclientget--post--put--head)) directly inside this function. |
+| `suspend fun getLatestUpdates(page: Int): MangasPage`                                                                                | Only called when `supportsLatest` is `true` (defaults to `true` on `KeiSource`).                                                           |
+| `suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage`                                          | Plain-text/filter search only; URL search queries are already routed to `getMangaByUrl`/`getMangasByUrl` instead.                          |
+| `suspend fun fetchMangaUpdate(manga: SManga, chapters: List<SChapter>, fetchDetails: Boolean, fetchChapters: Boolean): SMangaUpdate` | See below - whether to honor the flags depends on whether details and chapters come from the same request.                                 |
+| `suspend fun getPageList(chapter: SChapter): List<Page>`                                                                             | Fetch and parse the page list directly here.                                                                                               |
+
+Optional overrides (each has a working default; override only when your source needs different behavior):
+
+| Method                                                             | Default                                                          | Override when...                                                                                                                                                                                        |
+|----------------------------------------------------------------------|----------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `fun getHomeUrl(): String`                                            | Returns `baseUrl`.                                              | The browse screen's "Open in WebView" action should land somewhere other than `baseUrl` (e.g. the source's real site differs from the API host used as `baseUrl`).                                      |
+| `suspend fun getImageUrl(page: Page): String`                         | Not called unless a `Page.imageUrl` is empty.                   | A page's image URL can't be determined upfront in `getPageList` and must be resolved lazily once the chapter is opened - see [Chapter Pages](#chapter-pages). Make your request with `client` and return the URL directly. |
+| `fun getImageRequest(page: Page): Request`                            | A GET of `page.imageUrl` with `headers`.                        | The image needs other headers or a different URL. A GET without a `Fetch` is sent with `imageFetch`. See [Browser headers](#browser-headers). |
+| `val imageFetch: Fetch`                                               | `Fetch.IMAGE`.                                                  | The site's page images or covers must go out as built, without browser image headers: `Fetch.NONE`.                                                                                     |
+| `fun getMangaUrl(manga: SManga): String`                              | Returns `baseUrl + manga.url`.                                  | That doesn't land on the manga's real page. Since `SManga.url` is recommended to hold just an ID/slug rather than a full relative path (see [Misc notes](#misc-notes)), the default concatenation often isn't a valid path by itself - override to build the real URL from the ID/slug (e.g. `"$baseUrl/manga/${manga.url}"`).      |
+| `fun getChapterUrl(chapter: SChapter): String`                        | Returns `baseUrl + chapter.url`.                                | Same reasoning as `getMangaUrl`, for chapters.                                                                                                                                                            |
+| `suspend fun getMangaByUrl(url: HttpUrl): SManga?`                    | Throws (unimplemented).                                         | Almost always: this backs URL search (pasting/opening a manga link for this source). Return `null` if the URL isn't recognized - leaving this unimplemented means URL search crashes for this source.  |
+| `suspend fun getMangasByUrl(url: HttpUrl, page: Int): MangasPage`     | Wraps `getMangaByUrl`'s result into a single-item `MangasPage`. | A URL can resolve to more than one manga (e.g. a listing/category page URL) - override this instead of/alongside `getMangaByUrl`.                                                                       |
+| `val supportsRelatedMangas: Boolean`                                  | `false`.                                                         | Recommended whenever the site itself surfaces related/similar manga - set to `true` and implement `fetchRelatedMangaList`. **Only works on Komikku.**                                                   |
+| `val supportRelatedMangasBySearch: Boolean`                           | `false`.                                                         | Related manga should fall back to searching the source by title when a direct related-manga list isn't available. **Only works on Komikku.**                                                           |
+| `suspend fun fetchRelatedMangaList(manga: SManga): List<SManga>`      | Returns `emptyList()`.                                           | Only called when `supportsRelatedMangas` is `true`.                                                                                                                                                      |
+| `val supportsFilterFetching: Boolean`                                 | `false`.                                                         | The source needs to fetch its filter options from the network - see filter fetching below.                                                                                                              |
+| `suspend fun fetchFilterData(): JsonElement`                          | Returns `JsonNull`.                                              | Paired with `supportsFilterFetching = true`.                                                                                                                                                              |
+| `fun getFilterList(data: JsonElement?): FilterList`                   | Returns an empty `FilterList`.                                   | The source has any filters at all, fetched or static.                                                                                                                                                    |
+| `fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder`    | No changes.                                                      | Timeouts, extra interceptors, cookie/cache/DNS config - `client` itself is `final` on `KeiSource`.                                                                                                       |
+| `fun Headers.Builder.configureHeaders(): Headers.Builder`             | No changes.                                                      | Extra default headers beyond the `Referer`/`Origin` `KeiSource` already sets - `headersBuilder()` itself is `final`.                                                                                     |
+
+**`fetchMangaUpdate`:** if manga details and the chapter list come from the same page or the same
+API response, fetch and parse it once and return both the updated `SManga` and the full chapter
+list, regardless of the `fetchDetails`/`fetchChapters` flags - there's no separate request to skip,
+so honoring the flags would just mean discarding data you already parsed. If details and chapters
+instead live behind separate pages/endpoints, only fetch what each flag actually asks for; when
+both `fetchDetails` and `fetchChapters` are `true`, prefer firing both requests concurrently (e.g.
+with `coroutineScope { async { ... } }`) instead of awaiting them sequentially.
+
+Behavior `KeiSource` gives you for free:
+
+- **No manual request/parse split.** There is no `popularMangaRequest`/`popularMangaParse`,
+  `pageListRequest`/`pageListParse`, etc. - make the request and parse the response in the same
+  suspend function.
+- **Automatic URL search:** `getSearchManga` inspects the query; if it parses as an `HttpUrl`, it
+  calls `getMangasByUrl`/`getMangaByUrl` instead of `getSearchMangaList`. You do not need to handle
+  this manually.
+- **Headers:** `headersBuilder()` already sets `Referer` to `"$baseUrl/"` (with trailing slash) and `Origin` to
+  `baseUrl`; override `Headers.Builder.configureHeaders()` instead of `headersBuilder()` to add more.
+- <a id="browser-headers"></a>**Browser headers:** a request with a `Fetch` other than `Fetch.NONE` (see
+  [HTTP requests](#http-requests---okhttpclientget--post--put--head)), with a `User-Agent` naming Chrome or Firefox, gets the headers
+  that browser sends for that kind of request: client hints, `Accept-Language`, fetch metadata, `Accept`, `Priority`,
+  and the default `Origin` only where browsers send one. Any other request goes out as built, apart from the `Referer`
+  of `Fetch.from`.
+  - On a `Request.Builder`, set it with `.fetch(Fetch.XHR)` and so on. In an interceptor, change a request with
+    `request.newBuilder()`; a new `Request.Builder()` drops its `Fetch`.
+  - Page images (GETs from `getImageRequest` without a `Fetch`) and the covers the app loads are sent with
+    `imageFetch`, `Fetch.IMAGE` by default; override it with `Fetch.NONE` to send them as built. The app's covers are
+    recognised as GETs with `Cache-Control: no-store` and no `Fetch`, so don't put that on your own requests without
+    one.
+  - Headers a request already has are kept, fetch metadata and `Origin` the source sets itself included; `Origin` is
+    otherwise added where browsers send one (requests other than GET and HEAD, cross-origin XHRs). `from` replaces the `Referer`, also on each redirect.
+- **Filter fetching:** if a source needs to fetch its filter options from the network, set
+  `supportsFilterFetching = true`, implement `fetchFilterData()` (returns the raw filter data as a
+  `JsonElement`, called on a background coroutine, attempted up to 3 times total on failure, and
+  cached to disk for 3 days), and implement `getFilterList(data: JsonElement?)` (pure, synchronous - build a
+  `FilterList` from cached data, `null` on first launch or if fetching failed/hasn't completed yet).
 
 #### Main class key variables
 
-| Field     | Description                                                                                                                                                     |
-|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `name`    | Name displayed in the "Sources" tab in the app.                                                                                                                 |
-| `baseUrl` | Base URL of the source without any trailing slashes.                                                                                                            |
-| `lang`    | An ISO 639-1 compliant language code (two letters in lower case in most cases, but can also include the country/dialect part by using a simple dash character). |
-| `id`      | Identifier of your source, automatically set in `HttpSource`. It should only be manually overridden if you need to copy an existing autogenerated ID.           |
+> [!IMPORTANT]
+> Since `source {}` blocks are required, these fields are generated and injected automatically by KSP.
+> `id`, `lang`, and `versionId` are strictly owned by the DSL/codegen; overriding or declaring any of them in a `KeiSource` class throws fatal KSP compiler errors.
+> `id`, `lang`, and `versionId` must be configured in the `source { ... }` block in `build.gradle.kts`.
+> You can access `name`, `baseUrl`, `lang`, and `id` within your class (as they are part of the `HttpSource` contract), but **you must not declare or override them manually**.
+
+| Field       | Description                                                                                                                                                     |
+|-------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `name`      | Name displayed in the "Sources" tab in the app. Configured in `source { name = ... }`.                                                                         |
+| `baseUrl`   | Base URL of the source without any trailing slashes. Configured in `source { baseUrl = ... }`.                                                                |
+| `lang`      | An ISO 639-1 compliant language code. Configured in `source { lang = ... }`. Strictly owned by DSL; do not declare or override.                                |
+| `id`        | Identifier of your source. Owned by the `source {}` DSL - derived via a hash of `name + lang + versionId` unless set explicitly there. Only set it explicitly in the `source {}` block (never in the source class) when renaming a source or preserving an existing autogenerated ID - see [Renaming existing sources](#renaming-existing-sources). |
+| `versionId` | Version salt used for generating source ID. Owned by `source { versionId = ... }` in `build.gradle.kts`. Do not declare or override in the source class.     |
 
 ### HTML and Image Processing
 
-- **Parsing partial HTML:** If an API returns a JSON response containing an HTML string, use `Jsoup.parseBodyFragment(html, baseUrl)` instead of `Jsoup.parse(html)`. Passing the `baseUrl` ensures that `abs:href` and `absUrl()` can correctly resolve relative links.
+- **Parsing partial HTML:** If an API returns a JSON response containing an HTML string, use `Jsoup.parseBodyFragment(html, baseUrl)` instead of `Jsoup.parse(html)`. Passing the `baseUrl` ensures that `abs:href` and `absUrl()` correctly resolve relative links.
 
-- **Formatting Chapter Numbers:** Do not write custom `DecimalFormat` logic just to remove trailing zeros from float chapter numbers. Simply use `.toString().removeSuffix(".0")`.
+- **Formatting Chapter Numbers:** Do not write custom `DecimalFormat` logic solely to remove trailing zeros from float chapter numbers. Instead, use `.toString().removeSuffix(".0")`.
 
 - **Generating Page lists:** The app ignores the `index` passed to the `Page` object, but you must ensure the list itself is sorted correctly according to the source. You can use Kotlin's `mapIndexed` to easily instantiate `Page` objects, or rely on the index provided by the source API if available:
 
-    ```kotlin
-    return document.select(".pages img").mapIndexed { index, img ->
-        Page(index, imageUrl = img.attr("abs:src"))
-    }
-    ```
+  ```kotlin
+  return document.select(".pages img").mapIndexed { index, img ->
+      Page(index, imageUrl = img.attr("abs:src"))
+  }
+  ```
 
-- **Memory-efficient Image Interceptors:** When implementing interceptors for descrambling, stitching, or decrypting images, avoid loading the entire image into a `ByteArray`, as this can cause `OutOfMemoryError` on low-end devices. Prefer stream-based processing instead:
+- **Memory-efficient Image Interceptors:** When implementing interceptors for descrambling, stitching, or decrypting images, avoid loading the entire image into a `ByteArray`, as this can cause `OutOfMemoryError` on low-end devices. Prefer stream-based processing:
 
   - **Read:** Use `response.body.byteStream()` with `BitmapFactory.decodeStream()` to decode images directly from the stream.
   - **Write:** Write the processed bitmap into an Okio `Buffer` via `output.outputStream()` and convert it using `asResponseBody(mediaType)`.
   - **Decryption:** Use Okio's `cipherSource` extension for stream-based decryption rather than decrypting a full byte array in memory.
   - Note: `readByteArray()` should generally be avoided here because it forces full in-memory buffering of the image. Streaming directly keeps memory usage lower and more stable.
-  - Always wrap network responses in `response.use { ... }` to ensure the response body is properly closed and to prevent memory leaks.
-  - If applicable, call `bitmap.recycle()` after you're done with it to free native memory early.
+  - Always wrap network responses in `response.use { ... }` to ensure the response body is properly closed and memory leaks are prevented.
+  - If applicable, call `bitmap.recycle()` after use to free native memory early.
 
-### OkHttp and Network
-
-- **GraphQL Queries:** If you are sending GraphQL requests, use Kotlin's raw multi-dollar string interpolation (`$$"""..."""`) for your queries. This prevents having to escape every JSON variable `$` symbol manually.
-
-- **Empty checks on `.text()`:** Because Jsoup's `.text()` automatically trims whitespace, you can use `.isNotEmpty()` instead of `.isNotBlank()` when checking for empty strings.
+- **Do not manually check for Cloudflare:** Do not manually check for Cloudflare challenges (e.g., checking for "Just a moment..." text) in `parse` methods. The app handles this before calling the parser.
+- **Prefer stable selectors:** Avoid relying on volatile auto-generated CSS class names (e.g., `styles_Card__jN8og`) or complex regex for parsing. Prefer stable structural selectors.
+- **Use `ownText()` to avoid mutation:** To get text from an element without including text from its children, use `.ownText()`. This avoids the need to select and remove child elements (`.select().remove()`) or mutate the document.
+- **Parse status using `.lowercase()`:** When comparing strings for status parsing (e.g., `contains("ongoing")`), prefer calling `.lowercase()` on the source string once instead of using `ignoreCase = true` on multiple `contains` checks.
 
 ### Extension call flow
+
+This section walks through the app-level behavior (pagination, caching, mandatory fields, etc.)
+behind each `KeiSource` method - see [KeiSource](#keisource) for the method signatures themselves.
 
 #### Popular Manga
 
 a.k.a. the Browse source entry point in the app (invoked by tapping on the source name).
 
-- The app calls `fetchPopularManga` which should return a `MangasPage` containing the first batch of
-found `SManga` entries.
+- The app calls `getPopularManga` which should return a `MangasPage` containing the first batch of
+  found `SManga` entries.
   - This method supports pagination. When user scrolls the manga list and more results must be fetched,
-    the app calls it again with increasing `page` values (starting with `page=1`). This continues while
-    `MangasPage.hasNextPage` is passed as `true` and `MangasPage.mangas` is not empty.
+      the app calls it again with increasing `page` values (starting with `page=1`). This continues while
+      `MangasPage.hasNextPage` is passed as `true` and `MangasPage.mangas` is not empty.
 - To show the list properly, the app needs `url`, `title` and `thumbnail_url`. You **must** set them
-here. The rest of the fields could be filled later (refer to Manga Details below).
+  here. The rest of the fields could be filled later (refer to Manga Details below).
 
 #### Latest Manga
 
 a.k.a. the Latest source entry point in the app (invoked by tapping on the "Latest" button beside
 the source name).
 
-- Enabled if `supportsLatest` is `true` for a source
-- Similar to popular manga, but should be fetching the latest entries from a source.
+- Enabled if `supportsLatest` is `true` for a source (defaults to `true` on `KeiSource`; set it to
+  `false` if the source has no separate latest listing).
+- Similar to popular manga, but should be fetching the latest entries from a source via
+  `getLatestUpdates`.
 
 #### Manga Search
 
-- When the user searches inside the app, `fetchSearchManga` will be called and the rest of the flow
-is similar to what happens with `fetchPopularManga`.
-  - If search functionality is not available, return `Observable.just(MangasPage(emptyList(), false))`
+- When the user searches inside the app, `getSearchMangaList` will be called and the rest of the
+  flow is similar to what happens with `getPopularManga`.
+  - If search functionality is not available, return `MangasPage(emptyList(), false)`.
+  - If the query itself is a URL, `getMangaByUrl` is called instead - see [KeiSource](#keisource).
 - `getFilterList` will be called to get all filters and filter types.
 
 ##### Filters
 
 The search flow has support for filters that can be added to a `FilterList` inside the `getFilterList`
-method. When the user changes the filters' state, they will be passed to the `searchRequest`, and they
-can be iterated to create the request (by getting the `filter.state` value, where the type varies
-depending on the `Filter` used). You can check the [filter types available in Filter.kt](https://github.com/mihonapp/mihon/blob/main/source-api/src/commonMain/kotlin/eu/kanade/tachiyomi/source/model/Filter.kt)
+method. When the user changes the filters' state, they are passed into `getSearchMangaList` as its
+`filters` parameter, and can be iterated to build the request (by getting the `filter.state` value,
+where the type varies depending on the `Filter` used). You can check the [filter types available in Filter.kt](https://github.com/mihonapp/mihon/blob/main/source-api/src/commonMain/kotlin/eu/kanade/tachiyomi/source/model/Filter.kt)
 and in the table below.
 
 | Filter             | State type  | Description                                                                                                                                                              |
@@ -693,256 +1525,276 @@ open class UriPartFilter(displayName: String, private val vals: Array<Pair<Strin
 
 #### Manga Details
 
-- When user taps on a manga, `getMangaDetails` and `getChapterList` will be called and the results
-will be cached.
-  - A `SManga` entry is identified by it's `url`.
-- `getMangaDetails` is called to update a manga's details from when it was initialized earlier.
-  - `SManga.initialized` tells the app if it should call `getMangaDetails`. If you are overriding
-  `getMangaDetails`, make sure to pass it as `true`.
-  - `SManga.genre` is a string containing list of all genres separated with `", "`.
+- When a user taps on a manga, `fetchMangaUpdate` is called (with `fetchDetails`/`fetchChapters` set
+  according to what's needed) and the results are cached.
+  - A `SManga` entry is identified by its `url`.
+- `fetchDetails = true` asks for updated manga details.
+  - `SManga.initialized` tells the app whether details need fetching. You do not need to set it
+      yourself: `getMangaUpdate` (the `final` wrapper around `fetchMangaUpdate`) always sets it to
+      `true` on the returned manga.
+  - `SManga.genre` is a string containing a list of all genres separated by `", "`.
   - `SManga.status` is an "enum" value. Refer to [the values in the `SManga` companion object](https://github.com/tachiyomiorg/extensions-lib/blob/8240b5cfecbd281bc737ac159ea7d4e5825ed3df/library/src/main/java/eu/kanade/tachiyomi/source/model/SManga.kt#L26).
-  - During a backup, only `url` and `title` are stored. To restore the rest of the manga data, the
-  app calls `getMangaDetails`, so all fields should be (re)filled in if possible.
-  - If a `SManga` is cached, `getMangaDetails` will be only called when the user does a manual
-  update (Swipe-to-Refresh).
-- `getChapterList` is called to display the chapter list.
+  - Backups store nearly all known manga fields (author, genre, description, thumbnail, chapters,
+      etc.), not just `url`/`title` - restoring a backup writes that stored data straight into the
+      local library without a fresh network fetch. Fill in every field you can during
+      `fetchMangaUpdate` (details), since there's no guarantee of another automatic re-fetch beyond
+      a manual Swipe-to-Refresh.
+  - If a `SManga` is cached, details are only re-fetched when the user performs a manual update
+      (Swipe-to-Refresh).
+- `fetchChapters = true` asks for the chapter list.
   - **The list should be sorted descending by the source order**.
-- `getMangaUrl` is called when the user taps "Open in WebView".
-  - If the source uses an API to fetch the data, consider overriding this method to return the manga
-  absolute URL in the website instead.
-  - It defaults to the URL provided to the request in `mangaDetailsRequest`.
+- `getMangaUrl` is called when the user taps "Open in WebView". It defaults to `baseUrl + manga.url`;
+  only override it if that doesn't already resolve to the manga's page on the website. In practice
+  this is common, since `SManga.url` is recommended to hold just an ID/slug rather than a full
+  relative path - override to build the real URL from it (e.g. `"$baseUrl/manga/${manga.url}"`).
 
 #### Chapter
 
 - `SChapter.date_upload` is the [UNIX Epoch time](https://en.wikipedia.org/wiki/Unix_time)
-**expressed in milliseconds**.
-  - If you don't pass `SChapter.date_upload` and leave it zero, the app will use the default date
-  instead, but it's recommended to always fill it if it's available.
-  - To get the time in milliseconds from a date string, you can use a `SimpleDateFormat` like in
-  the example below.
+  **expressed in milliseconds**.
+  - If you do not pass `SChapter.date_upload` and leave it at zero, the app will use the default date
+      instead, but it is recommended to fill it if available.
+  - Use the `keiyoushi.utils` date helpers described in
+      [Date parsing - `tryParse` helpers](#date-parsing---tryparse-helpers) to convert the source's
+      date format into epoch milliseconds - they already return `0L` on failure, so no extra
+      `runCatching`/fallback handling is needed on your end.
+  - If parsing fails, return `0L` so the app uses the default date
+      instead.
+  - The app will overwrite the dates of existing chapters **UNLESS** `0L` is returned.
+  - If the source only provides the manga's update date, assign it to the latest chapter only.
 
-    ```kotlin
-    import keiyoushi.utils.tryParse
-
-    chapter.date_upload = dateFormat.tryParse(dateStr)
-
-    private val dateFormat by lazy {
-        SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ENGLISH)
-    }
-    ```
-
-    Make sure you make the `SimpleDateFormat` a class constant or variable so it doesn't get
-  recreated for every chapter. If you need to parse or format dates in manga description, create
-  another instance since `SimpleDateFormat` is not thread-safe.
-  - If the parsing has any problems, make sure to return `0L` so the app will use the default date
-  instead.
-  - The app will overwrite dates of existing old chapters **UNLESS** `0L` is returned.
-  - If the source only provides the manga's updated date, assign it to the latest chapter only.
-- `getChapterUrl` is called when the user taps "Open in WebView" in the reader.
-  - If the source uses an API to fetch the data, consider overriding this method to return the
-  chapter absolute URL in the website instead.
-  - It defaults to the URL provided to the request in `pageListRequest`.
+- `getChapterUrl` is called when the user taps "Open in WebView" in the reader. Like `getMangaUrl`,
+  it defaults to `baseUrl + chapter.url`; override it only when that doesn't resolve to the chapter's
+  page on the website.
 
 #### Chapter Pages
 
-- When user opens a chapter, `getPageList` will be called and it will return a list of `Page`s.
-- While a chapter is open in the reader or is being downloaded, `fetchImageUrl` will be called to get
-the URL for each page of the manga if `Page.imageUrl` is empty.
-- If the source provides all the `Page.imageUrl`s directly, you can fill them and leave `Page.url`
-empty, so the app will skip the `fetchImageUrl` step and directly call `fetchImage`.
-- The `Page.url` and `Page.imageUrl` attributes **should be set as absolute URLs**.
-- The list of `Page`s should be returned already sorted, the `index` field is ignored.
-- If you need to pass additional data to the image fetcher, it is recommended to pass it as a URL fragment (e.g. `url + "#data"`). OkHttp does not send fragments to the server, so there is no need to strip it out afterwards.
+- When a user opens a chapter, `getPageList(chapter)` is called and should return the full list of
+  `Page`s directly - fetch and parse the page data in this same suspend function.
+- If a page's `imageUrl` isn't known upfront, leave `Page.imageUrl` empty; while the chapter is open
+  in the reader or being downloaded, `getImageUrl(page)` is then called lazily to resolve it. This is
+  a plain `suspend fun String` - make your request with `client` (see
+  [HTTP requests](#http-requests---okhttpclientget--post--put--head)) and return the URL directly; there's no
+  separate request/parse split to override, and you don't need to override `getImageUrl` at all if
+  every `Page.imageUrl` is already filled by `getPageList`.
+- If the source provides all `Page.imageUrl` values directly, you can fill them and leave `Page.url`
+  empty. When set, `Page.url` and `Page.imageUrl` must be absolute URLs. `Page.url` may be empty if `imageUrl` is already filled.
+- The list of `Page`s should be returned already sorted; the `index` field is ignored.
+- If you need to pass additional data to the image fetcher, pass it as a URL fragment on `Page.url` (e.g., `url + "#data"`). OkHttp does not send fragments to the server, so there is no need to strip it afterward. For manga- or chapter-level metadata, use `memo` instead (see below).
 
 ### Misc notes
 
-- **Use `asJsoup()`:** Instead of manually reading the response body and parsing it with Jsoup (`Jsoup.parse(response.body.string())`), use the app's built-in extension function: `response.asJsoup()` (requires `eu.kanade.tachiyomi.util.asJsoup`).
+- **Passing state via `memo` instead of URL fragments:** Instead of hacking URL fragments (`#data`) into `SManga.url` or `SChapter.url` to preserve internal IDs or metadata (which corrupts URLs and breaks when URLs are stripped or parsed), use the `memo: JsonObject` property on `SManga` and `SChapter`. You can attach structured JSON via `buildJsonObject { put("key", value) }` during search or popular listings, and read it back cleanly in `fetchMangaUpdate`, `getChapterList`, or `getPageList` via `manga.memo["key"]?.stringOrNull` or `chapter.memo["key"]?.stringOrNull`. URL fragments should only be used on `Page.url` to pass transient parameters to OkHttp image interceptors:
+
+  ```kotlin
+  import keiyoushi.utils.stringOrNull
+  import kotlinx.serialization.json.buildJsonObject
+  import kotlinx.serialization.json.put
+
+  // Setting memo when building SManga or SChapter:
+  val manga = SManga.create().apply {
+      url = "/manga/$slug"
+      title = titleText
+      memo = buildJsonObject {
+          put("internal_id", id)
+      }
+  }
+
+  // Reading memo back in fetchMangaUpdate, getChapterList, or getPageList:
+  val internalId = manga.memo["internal_id"]?.stringOrNull
+  ```
+- **Use `asJsoup()`:** Instead of manually reading the response body and parsing it with Jsoup (`Jsoup.parse(response.body.string())`), use the built-in extension function: `response.asJsoup()` (`import keiyoushi.utils.asJsoup`), which streams the body and closes the response when done.
 - **Jsoup `.text()` is already trimmed:** Calling `element.text().trim()` is redundant because Jsoup automatically normalizes and trims whitespace. Just use `element.text()`.
+- **Omit default `joinToString` separator:** The default separator for `joinToString` is already `", "`. Do not pass it explicitly. Use `joinToString { it.text() }` instead of `joinToString(", ") { it.text() }`, and `joinToString()` instead of `joinToString(", ")`.
 - **Use named parameters for `Page`:** When instantiating `Page` objects, use the named parameter for the image URL: `Page(index, imageUrl = url)` instead of passing an empty string as the second argument (`Page(index, "", url)`).
-- **Throw `UnsupportedOperationException`:** If a source uses an API and doesn't need to parse HTML for images, override `imageUrlParse(response: Response)` and throw `UnsupportedOperationException()` instead of returning an empty string. Also use this pattern for unused inherited methods.
+- **Don't override `getImageUrl` unnecessarily:** Only override it if some pages need their image URL resolved lazily (see [Chapter Pages](#chapter-pages)). If `getPageList` already fills in every `Page.imageUrl`, leave it alone - there's no unused method to stub out or throw from.
 - **Cache Regex instances:** Define `Regex` instances at the class level or in a `companion object` so they aren't recompiled on every method call.
+- **Don't cache large data in memory:** Do not hold on to large or unbounded data (e.g. a fetched manga list, parsed DTOs, an entire chapter's page list) in a top-level/class-level `var`/`val`. A source instance is long-lived for the app's lifetime, so anything stored there stays resident and never gets garbage collected. Re-fetch or re-derive the data instead; if a single value genuinely needs caching (e.g. a small auth token), scope it narrowly and keep it small.
 - **Do not hardcode `User-Agent`:** Unless absolutely necessary (e.g., to bypass Cloudflare/protection, or to retrieve a specific mobile layout/different selectors), do not hardcode a specific `User-Agent`. Calling `super.headersBuilder()` already provides the app's default User-Agent.
 - **Use `buildString { }`:** When building descriptions or dynamic strings, use Kotlin's `buildString { ... }` instead of manually instantiating a `StringBuilder()`.
 - **Media Types:** `application/json` is intrinsically UTF-8. Avoid using `application/json; charset=utf-8`. Prefer helper functions like `toJsonRequestBody()` instead of manually specifying media types (e.g., `"application/json".toMediaType()`).
-- **Use `getUrlWithoutDomain` carefully:** It can be useful when parsing target source URLs, but note a current issue with spaces-replace them with URL-encoded characters (e.g., `%20`).
-- **Follow `HttpSource` workflow:** Stick to the general workflow from this base class when possible; deviating may introduce unnecessary complexity.
-- **Do not override default `HttpSource` methods:** Avoid overriding methods like `mangaDetailsRequest` or `chapterListRequest` if they only replicate the default behavior (`GET(baseUrl + manga.url, headers`). Only override them if the source requires a different URL structure or custom headers for those specific requests.
+- **`setUrlWithoutDomain()` already URL-encodes spaces:** It replaces literal spaces with `%20` internally before parsing the URL, so you do not need to encode them yourself. Other invalid URI characters, however, make it silently fall back to the full original URL (domain included) instead of stripping it - double-check unusual scraped URLs so a malformed one doesn't silently defeat future domain migrations.
+- **Manga/chapter URLs:** Prefer storing just the ID or slug in `SManga.url` and `SChapter.url`. Storing the relative URL with `setUrlWithoutDomain()` is also acceptable. Avoid absolute URLs to make future domain migrations easier.
+- **Separate custom headers:** When adding custom headers to a request (e.g., for AJAX endpoints), avoid building them inline within a `client.get`/`client.post` call. Instead, assign the modified headers to a separate variable or define them as a class-level property. This improves readability and allows for reuse across multiple requests.
 - **Configurable sources:** By implementing `ConfigurableSource`, you can add settings backed by `SharedPreferences`.
+- **Code organization:** For readability, group related methods together in your extension class (e.g., all popular manga methods, then all latest manga methods, then search methods, and so on). A logical ordering like Popular → Latest → Search → Details → Chapters → Pages → Filters → Utilities makes the class easier to navigate and maintain without needing explicit section header comments.
+- **DTO extensions:** Move mapping extensions for DTOs (like `fun MyDto.toSManga()`) into the DTO file itself to keep the main source class clean.
 
 ### Advanced Extension features
 
 #### Extension logic and app features
 
-- **Mandatory SManga fields:** A manga's `title` and `url` are **mandatory**. Do not provide generic fallbacks like `"Untitled"` or `"Unknown"` if the site fails to provide a title, as this breaks downloads and library management.
-  Prefer failing loudly (e.g., throwing an exception) so broken selectors are detected early. Silent fallbacks or empty values can hide issues and make debugging harder. If the title or url is missing, it is better to throw or skip the entry entirely.
-- **Optional fields:** For all other fields, prefer safe calls (`?.`) and avoid using the non-null assertion (`!!`). Missing data like thumbnails or descriptions should not crash the entire parsing process. Consider using Kotlin's `mapNotNull` when parsing lists of elements so that if a single item fails, the rest of the list can still be loaded successfully.
-- **When to bump `versionId`:** The `versionId` property dictates how the app tracks the source. **Only override and bump `versionId` if the source's URL structure fundamentally changes** (e.g., old manga URLs no longer work and there is no way to create a redirect). Bumping this forces all users to re-migrate their bookmarks.
-- **Self-hosted sources:** If you are adding a source for a self-hosted server (e.g., StashApp, Komga, Suwayomi), make your class implement the `UnmeteredSource` interface. This tells the app not to apply standard rate-limiting to the user's own local server.
+- **Mandatory fields:** A manga's `title` and `url` are **mandatory**. A chapter's `name` is also mandatory, though generic values like `"Chapter"` are acceptable for sources providing only a single chapter (e.g., gallery sources). Do not provide generic fallbacks like `"Untitled"`, `"Unknown"`, or empty strings if the site fails to provide a title or URL, as this breaks downloads and library management.
+  Prefer failing loudly (e.g., throwing an exception or using `!!`) so broken selectors are detected early. Silent fallbacks or empty values can hide issues and make debugging harder. If a mandatory field is missing, it is better to throw an exception or skip the entry entirely.
+- **Optional fields:** For all other fields, prefer safe calls (`?.`) and avoid the non-null assertion (`!!`). Missing data like thumbnails or descriptions should not crash the parsing process. Consider using Kotlin's `mapNotNull` when parsing lists of elements so that if a single item fails, the rest of the list can still load successfully.
+- **Extension `name` field:** Do not add a language suffix or other qualifier to `name` (e.g., `"MySite EN"`). The app already groups sources by language.
+- **`supportsLatest` convention:** If a source only has the latest listing, use that for the popular listing and set `supportsLatest = false`.
+- **When to bump `source { versionId = ... }`:** The `versionId` field in the `source {}` block dictates how the source's ID is auto-computed. **Only bump it if the source's URL structure fundamentally changes** (e.g., old manga URLs no longer work and there is no way to create a redirect). Bumping this forces all users to re-migrate their bookmarks.
+- **Self-hosted sources:** If you are adding a source for a self-hosted server (e.g., StashApp, Komga, Suwayomi), implement the `UnmeteredSource` interface in your class. This tells the app not to apply standard rate-limiting to the user's local server.
 - **Preference listeners:** When implementing `ConfigurableSource`, you do not need to manually save values inside `setOnPreferenceChangeListener`. The Android preference framework saves the value to `SharedPreferences` automatically.
+- **Update Strategy:** For gallery sources or sources where entries are completed upon upload, set `update_strategy = UpdateStrategy.ONLY_FETCH_ONCE` to prevent unnecessary update checks.
+- **Preserving Source ID:** If you change a source's `name` or `lang`, its auto-generated `id` changes, disconnecting existing users' libraries. To prevent this, set `id` explicitly to the old value (found in `index.json`) in the `source {}` block in `build.gradle.kts`. Do NOT override `id` in your source class, as doing so throws a fatal KSP compiler error. See [Renaming existing sources](#renaming-existing-sources).
+- **Avoid hardcoded host checks:** When checking URLs in deep links or search overrides, avoid hardcoding the host string (e.g., `queryUrl.host == "site.com"`). This breaks if mirrors are added. Prefer dynamically checking against the source's `baseUrl`.
+- **Empty Lists vs. Exceptions:** If `getPageList` or the chapter list from `fetchMangaUpdate` finds no items (e.g., a locked or empty chapter), return `emptyList()` instead of throwing a hardcoded exception. The app will display a localized error message.
+- **Keep comments concise and preferably in English:** We recommend writing code comments and KDocs in English to make them accessible to all contributors. Additionally, avoid verbose, redundant, or AI-generated comments explaining obvious code. Keep the code clean and self-documenting.
+
+#### Configurable Sources and Preferences
+
+- **Base URL and Mirrors:** Custom base URLs and mirror selectors are generated automatically by the `baseUrl { mirrors(...) }` and `baseUrl { custom(...) }` DSL blocks in `build.gradle.kts`. **Do not** implement these manually using `SharedPreferences` or `ListPreference`, as the KSP codegen handles preference migration, index coercion, and property overriding automatically.
+- **Other preferences:** For other custom settings (like image quality or language), implement the `ConfigurableSource` interface and use the `getPreferences()` or `getPreferencesLazy()` helpers to manage your settings.
 
 #### URL intent filter
 
-Extensions can define a URL pattern so that these URLs can be opened in Mihon.
+Extensions can handle URLs from browsers or other apps by declaring deeplinks in `build.gradle.kts`. When a matching URL is opened on the device, Mihon launches and receives the URL as a search query.
 
-To do this, you need two files:
-
-- `AndroidManifest.xml` which must be placed in the root directory of your extension (Example: `src/id/riztranslation/AndroidManifest.xml`)
-- `UrlActivity.kt` which should be placed next to your main file. (Example: `src/id/riztranslation/src/eu/kanade/tachiyomi/extension/id/riztranslation/UrlActivity.kt`)
-
-`AndroidManifest.xml` example :
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
-    <application>
-        <activity
-            android:name=".id.riztranslation.UrlActivity"
-            android:excludeFromRecents="true"
-            android:exported="true"
-            android:theme="@android:style/Theme.NoDisplay">
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-
-                <data
-                    android:host="riztranslation.pages.dev"
-                    android:pathPattern="/..*"
-                    android:scheme="https" />
-                <data
-                    android:host="riztranslation.rf.gd"
-                    android:pathPattern="/..*"
-                    android:scheme="https" />
-            </intent-filter>
-        </activity>
-    </application>
-</manifest>
-```
-
-The `AndroidManifest.xml` file will contain an `android:name` attribute that refers to the path of your `UrlActivity.kt` file. For example, if the extension is Riztranslation, the `android:name` will be `.id.riztranslation.UrlActivity`.
-
-Next, you have the `<data android:scheme="https" android:host="host" android:pathPattern="/..*" />` element; you can have it multiple times, which allows you to specify the URL that can be opened in Mihon. You can read more about this in Android's [`<data>` documentation](https://developer.android.com/guide/topics/manifest/data-element).
-
-Now, as for `UrlActivity`, you can just use the example below.
-
-> [!CAUTION]
-> The activity does not support any Kotlin Intrinsics specific methods or calls,
-> and using them will cause crashes in the activity. Consider using Java's equivalent
-> methods instead, such as using `String`'s `equals()` instead of using `==`.
->
-> You can use Kotlin Intrinsics in the extension source class, this limitation only
-> applies to the activity classes.
-
-To explain how it works, it will trigger Mihon's `SEARCH` action, passing the URL as a query and specifying that it comes from your extension to narrow down the search. Avoid putting any logic in this file; instead, implement it in your extension's class.
+Add one or more `deeplink {}` blocks inside the `keiyoushi {}` block:
 
 ```kotlin
-class UrlActivity : Activity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val intentData = intent?.data?.toString()
-        if (intentData != null) {
-            val mainIntent = Intent().apply {
-                action = "eu.kanade.tachiyomi.SEARCH"
-                putExtra("query", intentData)
-                putExtra("filter", packageName)
-            }
-            try {
-                startActivity(mainIntent)
-            } catch (e: Throwable) {
-                Log.e("RiztranslationUrl", e.toString())
-            }
-        } else {
-            Log.e("RiztranslationUrl", "could not parse uri from intent $intent")
-        }
+keiyoushi {
+    name = "My Source"
+    // ...
 
-        finish()
-        exitProcess(0)
+    deeplink {
+        host("example.com")
+        path("/manga/..*")
+        path("/chapter/..*")
     }
 }
 ```
 
-Now all you need to do is adapt the search function (`fetchSearchManga`) in your extension so that, given a URL, it returns a single manga that matches that URL. For example:
+| DSL call              | Description                                                                                                                                                                                                                                                                  |
+|-----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `host("example.com")` | A hostname to match. Call multiple times to register multiple hosts. If omitted, the host is derived from `baseUrl` automatically.                                                                                                                                           |
+| `path("/manga/..*")`  | A path pattern in Android [`pathPattern`](https://developer.android.com/guide/topics/manifest/data-element#path) syntax. Call multiple times to match multiple paths. At least one `path()` call is required; a `deeplink {}` block with no paths produces no intent filter. |
+
+Multiple `deeplink {}` blocks create independent intent filters, which is useful when different hosts or path groups must be handled separately:
 
 ```kotlin
-if (query.startsWith("https://")) {
-    val url = query.toHttpUrlOrNull()
-    if (url != null && url.host == baseUrl.toHttpUrl().host) {
-        val typeIndex = url.pathSegments.indexOfFirst { it == "detail" || it == "view" }
-        if (typeIndex != -1 && typeIndex + 1 < url.pathSize) {
-            val id = url.pathSegments[typeIndex + 1]
-            return GET("$apiUrl/Book?select=id,judul,cover&type=not.ilike.*novel*&id=eq.$id", apiHeaders)
-        }
+deeplink {
+    host("example.com")
+    path("/manga/..*")
+}
+
+deeplink {
+    host("cdn.example.com")
+    path("/images/..*")
+}
+```
+
+No `AndroidManifest.xml` or `UrlActivity.kt` is needed; they are generated and provided automatically by the build system.
+
+If the extension uses a theme (via `theme = "<theme_name>"`), deeplinks defined in the theme's `build.gradle.kts` are automatically merged, so individual extensions using that theme do not need to repeat shared URL patterns.
+
+Once deeplinks are declared, implement URL handling. When a deeplink is opened on the device, the app fires a
+search with the full URL as the query.
+
+On `KeiSource` (`libVersion = "1.6"`), simply implement `getMangaByUrl`:
+
+```kotlin
+import eu.kanade.tachiyomi.source.model.SManga
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
+
+override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
+    if (url.host != baseUrl.toHttpUrl().host) return null
+    val id = url.pathSegments.getOrNull(1) ?: return null
+    return SManga.create().apply {
+        this.url = "/manga/$id"
+        title = ...
     }
 }
 ```
 
-To test if the URL intent filter is working as expected, you can try opening the website in a browser
-and navigating to the endpoint that was added as a filter or clicking a hyperlink. Alternatively,
-you can use the `adb` command below.
+`KeiSource.getSearchManga` automatically detects when the query is a URL and invokes `getMangaByUrl(url)` without executing keyword search logic.
+
+> [!NOTE]
+> Avoid checking for hardcoded host strings (e.g., `url.host == "site.com"`). Prefer dynamically comparing against the source's `baseUrl` to maintain mirror and custom URL support.
+
+
+To test whether the URL intent filter is working as expected, use the `adb` command below:
 
 ```bash
 adb shell am start -d "<your-link>" -a android.intent.action.VIEW
 ```
 
-You can find a complete example of how URLs work in the [Riztranslation extension](https://github.com/keiyoushi/extensions-source/tree/main/src/id/riztranslation).
-
 #### Update strategy
 
-In some cases, titles in a source will always have the same chapter list (i.e., they are immutable).
-These do not need to be included in global app updates. Excluding them saves a lot of network requests
-and prevents unnecessary load on the source servers. To change the update strategy of a `SManga`,
-use the `update_strategy` field. You can find below a description of the current possible values.
+In some cases, titles in a source always have the same chapter list (i.e., they are immutable).
+These do not need inclusion in global app updates. Excluding them saves network requests
+and prevents unnecessary load on source servers. To change the update strategy of a `SManga`,
+use the `update_strategy` field. Description of the current possible values follows:
 
 - `UpdateStrategy.ALWAYS_UPDATE`: Titles marked as always update will be included in the library
-update if they aren't excluded by additional restrictions.
-- `UpdateStrategy.ONLY_FETCH_ONCE`: Titles marked as only fetch once will be automatically skipped
-during library updates. Useful for cases where the series is previously known to be finished and have
-only a single chapter, for example.
+  update unless excluded by additional restrictions.
+- `UpdateStrategy.ONLY_FETCH_ONCE`: Titles marked as only fetch once are automatically skipped
+  during library updates. This is useful for cases where the series is known to be finished and has
+  only a single chapter, for example.
 
 If not set, it defaults to `ALWAYS_UPDATE`.
 
 #### Renaming existing sources
 
-There are some cases where existing sources change their names on the website. To correctly reflect
-these changes in the extension, you need to explicitly set the `id` to the same old value, otherwise
-it will get changed by the new `name` value and users will be forced to migrate back to the source.
+If existing sources change their names on the website, you must explicitly set the `id` to the previous value to reflect these changes correctly. Otherwise, it will change based on the new `name` value, forcing users to re-migrate to the source.
 
-To get the current `id` value before the name change, you can search the source name in the [repository JSON file](https://github.com/keiyoushi/extensions/blob/repo/index.json)
-by looking at the `sources` attribute of the extension. When you have the `id` copied, you can
-override it in the source:
+To get the current `id` value before a name change, search the source name in the [repository JSON file](https://github.com/keiyoushi/extensions/blob/repo/index.json)
+under the `sources` attribute of the extension.
+
+Set `id` directly in the `source {}` block in `build.gradle.kts` (never override `id` in your source class, as doing so throws a fatal KSP compiler error):
 
 ```kotlin
-override val id: Long = <the-id>
+source {
+    name = "New Name"  // or lang = "xx" if lang is what changed
+    lang = "en"
+    baseUrl = "https://example.com"
+    id = 1234567890123456789L // Replace with the actual old source ID
+}
 ```
 
-Then the class name and the `name` attribute value can be changed. Also don't forget to update the
-extension name and class name in the individual Gradle file.
+The class name and the `name` property in the `source {}` block can then be changed. Also, update the extension name and class name in the individual Gradle file.
 
 > [!IMPORTANT]
-> The package name **needs** to be the same (even if it has the old name), otherwise users will not
-> receive the extension update when it gets published in the repository.
+> The package name **must** remain the same (even if it uses the old name); otherwise, users will not
+> receive the extension update when published in the repository.
 
-The `id` also needs to be explicitly set to the old value if you're changing the `lang` attribute.
+The `id` also must be explicitly set to the old value in the `source {}` block if you change the `lang` property.
 
 > [!NOTE]
-> If the source has also changed their theme you can instead just change
-> the `name` field in the source class and in the Gradle file. By doing so
-> a new `id` will be generated and users will be forced to migrate.
+> If the source has also changed its theme, you can simply change
+> the `name` property in the `source {}` block in the Gradle file. By doing so,
+> a new `id` is generated and users will be forced to migrate.
+
+##### Moving a source to a different directory
+
+The application ID is derived from the module path (`src/<lang>/<name>` becomes
+`eu.kanade.tachiyomi.extension.<lang>.<name>`). When moving a source to a different directory
+(e.g. `en` to `all`, or a rename of the module directory), set `pkgName` in the new
+module's `build.gradle.kts` to the old path-derived suffix so the package name stays the same:
+
+```kotlin
+keiyoushi {
+    name = "New Name"
+    pkgName = "en.oldname" // <old lang>.<old dir name>
+    // ...
+}
+```
+
+The published APK keeps its old package name and file name, so users receive the move as a
+regular update instead of having to uninstall and reinstall. The Kotlin `package` declarations
+of the source code don't participate in the published identity - the entry point is generated
+at the fixed location `keiyoushi.source.Generated` - so they may be updated to match the new
+directory or left as-is. A PR check (`.github/scripts/audit-packages.py`) fails the build if
+two modules would produce the same application ID.
 
 ## Multi-source themes
 
-The `lib-multisrc` directory houses source code that is useful in situations where multiple source
-sites use the same site generator tool (usually a CMS) for bootstrapping their website and this makes
-them similar enough to prompt code reuse through inheritance/composition; which from now on we will
-use the general **theme** term to refer to.
+The `lib-multisrc` directory houses source code useful when multiple source
+sites use the same site generator tool (usually a CMS). Their similarity prompts code reuse through inheritance or composition, referred to here as a **theme**.
 
-Themes are provided as libraries within `lib-multisrc`. You can apply a theme to an extension by specifying the `themePkg` property in its `build.gradle` file.
+Themes are provided as libraries within `lib-multisrc`. You can apply a theme to an extension by specifying the `theme` property in its `build.gradle.kts` file.
 
 ### Creating a new theme
 
-To create a new theme, you need to set up a new module inside the `lib-multisrc` directory. The structure is similar to a regular extension, but it acts as a base library that other extensions can depend on.
+To create a new theme, set up a new module inside the `lib-multisrc` directory. The structure is similar to a regular extension, but it acts as a base library that other extensions can depend on.
 
 #### Theme directory structure
 
@@ -951,48 +1803,67 @@ $ tree lib-multisrc/<theme_name>/
 lib-multisrc/<theme_name>/
 ├── build.gradle.kts
 └── src
-    └── main
-        └── java
-            └── eu
-                └── kanade
-                    └── tachiyomi
-                        └── multisrc
-                            └── <theme_name>
-                                └── <ThemeName>.kt
+    └── eu
+        └── kanade
+            └── tachiyomi
+                └── multisrc
+                    └── <theme_name>
+                        └── <ThemeName>.kt
 ```
 
-`<theme_name>` should be adapted from the CMS/theme name, and can only contain lowercase ASCII letters and digits. Your theme code must be placed in the package `eu.kanade.tachiyomi.multisrc.<theme_name>`.
+`<theme_name>` should be adapted from the CMS or theme name and can only contain lowercase ASCII letters and digits. Your theme code must be placed in the package `eu.kanade.tachiyomi.multisrc.<theme_name>`.
 
 #### Theme build.gradle.kts
 
-Make sure that your new theme's `build.gradle.kts` file follows this structure:
+Ensure that your new theme's `build.gradle.kts` file follows this structure:
 
 ```kotlin
 plugins {
-    id("lib-multisrc")
+    alias(kei.plugins.multisrc)
 }
 
-baseVersionCode = 1
+keiyoushi {
+    baseVersionCode = 1
+    libVersion = "1.6"
+}
 ```
 
-| Field             | Description                                                                                                                                                                   |
-|-------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `baseVersionCode` | The base version code for the theme. This must be a positive integer and **incremented** whenever a change is made to the theme's implementation that affects the extensions. |
+If the CMS generates URLs with a consistent structure shared by all sites built on it, you can declare deeplinks here as well. Every extension using this theme inherits them automatically:
+
+```kotlin
+keiyoushi {
+    baseVersionCode = 1
+    libVersion = "1.6"
+
+    deeplink {
+        path("/manga/..*")
+        path("/chapter/..*")
+    }
+}
+```
+
+When no `host()` is specified in a theme `deeplink {}` block, the host is resolved at build time from each individual extension's `baseUrl`, so the same path patterns apply to every site without hardcoding hostnames in the theme.
+
+| Field             | Description                                                                                                                                                                                                                                                              |
+|-------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `baseVersionCode` | The theme's base version code. This must be a positive integer and **incremented** whenever a change is made to the theme implementation that affects the extensions.                                                                                                    |
+| `libVersion`      | The extension library version. Must be `"1.6"`, and the theme's main class must extend `KeiSource`. Every extension using the theme inherits this value and must not set its own `libVersion`. |
+| `deeplink {}`     | Declares URL deeplink patterns inherited by all extensions using this theme. See [URL intent filter](#url-intent-filter).                                                                                                                                                |
 
 #### Theme main class
 
-The main class of the theme (e.g., `<ThemeName>.kt`) contains the default implementation for the source sites. It should be declared as an `abstract class` extending `HttpSource`, allowing individual extensions to inherit and override its properties and methods.
+The theme's main class (e.g., `<ThemeName>.kt`) contains the default implementation for the source sites. It should be declared as an `abstract class` extending `KeiSource`, allowing individual extensions to inherit and override its properties and methods.
 
 ```kotlin
-package eu.kanade.tachiyomi.multisrc.<theme_name>
+package eu.kanade.tachiyomi.multisrc.example // Replace 'example' with your theme name
 
-import eu.kanade.tachiyomi.source.online.HttpSource
+import keiyoushi.source.KeiSource
 
-abstract class <ThemeName>(
-    override val name: String,
-    override val baseUrl: String,
-    override val lang: String,
-) : HttpSource() {
+abstract class ExampleTheme : KeiSource() {
+
+    // name, lang, and baseUrl are inherited from KeiSource. They are automatically
+    // overridden and injected by the KSP generator via each extension's `source {}`
+    // block. Do not declare them in the constructor.
 
     // Theme default implementation...
 
@@ -1001,25 +1872,42 @@ abstract class <ThemeName>(
 
 ### Using a Theme
 
-To use a theme in your extension, follow the regular extension creation steps and add the `themePkg` property to your `build.gradle`:
+To use a theme in your extension, follow the regular extension creation steps and configure `theme` in your `build.gradle.kts`:
 
-```groovy
-ext {
-    extName = '<My source name>'
-    extClass = '.<MySourceName>'
-    themePkg = '<theme_name>'
-    overrideVersionCode = 1
-    isNsfw = true
+```kotlin
+// build.gradle.kts
+keiyoushi {
+    name = "Example" // Replace with your actual source name
+    theme = "example" // Replace with your actual theme name
+    versionCode = 1
+    contentWarning = ContentWarning.NSFW
+    libVersion = "1.6" // Must match the theme's own libVersion
+
+    source {
+        lang = "en"
+        baseUrl = "https://example.com"
+    }
 }
-
-apply from: "$rootDir/common.gradle"
 ```
 
-Notice that instead of `extVersionCode`, extensions using a theme must use `overrideVersionCode`. The final extension version code (`extVersionCode`) is automatically calculated during the build process as `theme.baseVersionCode + ext.overrideVersionCode`.
+```kotlin
+// MySource.kt
+package eu.kanade.tachiyomi.extension.en.mysource
 
-Because themes are provided as libraries, your extension's main class will directly inherit from the theme's base class.
+import keiyoushi.annotation.Source
 
-Any site-specific overrides, custom functions, or custom icons are implemented directly in your extension's module (`src/<lang>/<mysourcename>`) by overriding the inherited theme properties and functions.
+@Source
+abstract class MySource : ExampleTheme() { // Replace 'ExampleTheme' with your theme name
+    // name, lang, id, baseUrl injected automatically
+    // override theme defaults as needed
+}
+```
+
+The final extension version code is automatically calculated during the build as `theme.baseVersionCode + versionCode`.
+
+Because themes are provided as libraries, your extension's main class inherits directly from the theme's base class.
+
+Site-specific overrides, custom functions, or custom icons are implemented directly in your extension's module (`src/<lang>/<mysourcename>`) by overriding the inherited theme properties and functions.
 
 ## Running
 
@@ -1033,32 +1921,32 @@ Copy the following into `Launch Flags` for the Debug build of Mihon:
 -W -S -n app.mihon.dev/eu.kanade.tachiyomi.ui.main.MainActivity -a eu.kanade.tachiyomi.SHOW_CATALOGUES
 ```
 
-For other builds, replace  `app.mihon.dev` with the corresponding package IDs:
+For other builds, replace `app.mihon.dev` with the corresponding package IDs:
 
 - Release build: `app.mihon`
 - Preview build: `app.mihon.debug`
 
-If the extension builds and runs successfully, then the code changes should be ready to test in your local app.
+If the extension builds and runs successfully, the code changes should be ready to test in your local app.
 
 > [!IMPORTANT]
-> If you're deploying to Android 11 or higher, enable the `Always install with package manager` option in the run configurations. Without this option enabled, you might face issues such as Android Studio running an older version of the extension without the modifications you might have done.
+> If you are deploying to Android 11 or higher, enable the `Always install with package manager` option in the run configurations. Otherwise, you might face issues such as Android Studio running an older version of the extension without your modifications.
 
 ## Debugging
 
 ### Android Debugger
 
 > [!NOTE]
-> It is generally recommended to rely on logging instead of the Android Debugger. Using standard logs (like `Log.d` or viewing OkHttp logs) is typically much faster, easier to set up, and is more than sufficient for debugging web scraping logic.
+> It is generally recommended to rely on logging instead of the Android Debugger. Using standard logs (like `Log.d` or viewing OkHttp logs) is typically much faster, easier to set up, and sufficient for debugging web scraping logic.
 
 > [!IMPORTANT]
-> If you didn't **build the main app** from source with **debug enabled** and are using a release/beta APK, you **need a rooted device**.
-> If you are using an **emulator** instead, make sure you choose a profile **without Google Play**.
+> If you did not **build the main app** from source with **debug enabled** and are using a release or beta APK, you **need a rooted device**.
+> If you are using an **emulator**, ensure you choose a profile **without Google Play**.
 
-Follow the steps above for building and running locally if you haven't already. Debugging will not work if you did not follow the steps above.
+Follow the steps above for building and running locally if you haven't already. Debugging will not work if you did not follow those steps.
 
 You can leverage the Android Debugger to add breakpoints and step through your extension while debugging.
 
-You *cannot* simply use Android Studio's `Debug 'module.name'` -> this will most likely result in an
+You _cannot_ simply use Android Studio's `Debug 'module.name'`; this will likely result in an
 error while launching.
 
 Instead, once you've built and installed your extension on the target device, use
@@ -1070,7 +1958,7 @@ Inside the `Attach Debugger to Android Process` window, once the app is running 
 
 ### Logs
 
-You can also elect to simply rely on logs printed from your extension, which
+You can also elect to rely on logs printed from your extension, which
 show up in the [`Logcat`](https://developer.android.com/studio/debug/am-logcat) panel of Android Studio.
 
 ### Inspecting network calls
@@ -1079,38 +1967,34 @@ One of the easiest ways to inspect network issues (such as HTTP errors 404, 429,
 is to use the [`Logcat`](https://developer.android.com/studio/debug/am-logcat) panel of Android Studio
 and filter by the `OkHttpClient` tag.
 
-To be able to check the calls made by OkHttp, you need to enable verbose logging in the app, which is
-not enabled by default. To enable it, go to
-More -> Settings -> Advanced -> Verbose logging. After enabling it, don't forget to restart the app.
+To check the calls made by OkHttp, you must enable verbose logging in the app; it is not enabled by default. To enable it, go to More → Settings → Advanced → Verbose logging. Afterward, restart the app.
 
-Inspecting the Logcat allows you to get a good look at the call flow and is more than enough in most
-cases where issues occur. However, alternatively, you can also use an external tool like `mitm-proxy`.
+Inspecting the Logcat allows you to see the call flow and is sufficient in most
+cases. Alternatively, you can use an external tool like `mitmproxy`.
 For that, refer to the subsequent sections.
 
-On newer Android Studio versions, you can use its built-in Network Inspector inside the
-App Inspection tool window. This feature provides a nice GUI to inspect the requests made in the app.
+On newer Android Studio versions, you can use the built-in Network Inspector inside the
+App Inspection tool window. This feature provides a GUI to inspect the requests made in the app.
 
 To use it, follow the [official documentation](https://developer.android.com/studio/debug/network-profiler)
 and select the app's package name in the process list.
 
 ### Using external network inspecting tools
 
-If you want a deeper look into the network flow, such as inspecting the request and response bodies
-you can use an external tool like `mitm-proxy`.
+If you want a deeper look into the network flow, such as inspecting the request and response bodies,
+you can use an external tool like `mitmproxy`.
 
-#### Setup your proxy server
+#### Set up your proxy server
 
-We are going to use [mitm-proxy](https://mitmproxy.org/) but you can replace it with any other Web
-Debugger (i.e. Charles, Burp Suite, Fiddler etc). To install and execute, follow the commands below.
+We are going to use [mitmproxy](https://mitmproxy.org/), but you can replace it with any other Web
+Debugger (e.g., Charles, Burp Suite, Fiddler). To install and execute, follow the commands below.
 
-```console
-# Install the tool.
-$ sudo pip3 install mitmproxy
-# Execute the web interface and the proxy.
-$ mitmweb
-```
+> [!WARNING]
+> Do NOT use `sudo pip` to install `mitmproxy`. Follow the [official installation methods](https://docs.mitmproxy.org/stable/overview-installation/).
 
-Alternatively, you can also use the Docker image:
+After installing it, you can run `mitmweb` to open the web interface.
+
+Alternatively, use the Docker image:
 
 ```bash
 $ docker run --rm -it -p 8080:8080 \
@@ -1123,14 +2007,19 @@ After installing and running, open your browser and navigate to <http://127.0.0.
 
 #### OkHttp proxy setup
 
-Since most of the manga sources are going to use HTTPS, we need to disable SSL verification in order
-to use the web debugger. For that, add this code to inside your source class:
+Since most manga sources use HTTPS, we must disable SSL verification to use the web debugger.
+
+> [!CAUTION]
+> The following code disables certificate and hostname verification. Use it **only** in a local debug build, **never** submit it as production source code, and **remove it** before opening a Pull Request.
+
+For that, add this code inside your source class:
 
 ```kotlin
 package eu.kanade.tachiyomi.extension.en.mysource
 
 import android.annotation.SuppressLint
-import eu.kanade.tachiyomi.source.online.HttpSource
+import keiyoushi.annotation.Source
+import keiyoushi.source.KeiSource
 import okhttp3.OkHttpClient
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -1140,7 +2029,8 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
-class MySource : HttpSource() {
+@Source
+abstract class MySource : KeiSource() {
     private fun OkHttpClient.Builder.ignoreAllSSLErrors(): OkHttpClient.Builder {
         val naiveTrustManager = @SuppressLint("CustomX509TrustManager")
         object : X509TrustManager {
@@ -1159,16 +2049,15 @@ class MySource : HttpSource() {
         return this
     }
 
-    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
-        .ignoreAllSSLErrors()
-        .proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("10.0.2.2", 8080)))
-        .build()
+    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder =
+        ignoreAllSSLErrors()
+            .proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("10.0.2.2", 8080)))
 }
 ```
 
-Note: `10.0.2.2` is usually the address of your loopback interface in the android emulator. If
-the app tells you that it's unable to connect to 10.0.2.2:8080 you will likely need to change it
-(the same if you are using hardware device).
+Note: `10.0.2.2` is usually the address of your loopback interface in the Android emulator. If
+the app tells you that it's unable to connect to 10.0.2.2:8080, you will likely need to change it
+(the same if you are using a hardware device).
 
 If all went well, you should see all requests and responses made by the source in the web interface
 of `mitmweb`.
@@ -1178,43 +2067,54 @@ of `mitmweb`.
 APKs can be created in Android Studio via `Build > Build Bundle(s) / APK(s) > Build APK(s)` or
 `Build > Generate Signed Bundle / APK`.
 
-If for some reason you decide to build the APK from the command line, you can use the following
-command (because you're doing things differently than expected, I assume you have some
-knowledge of gradlew and your OS):
+If you decide to build the APK from the command line, use the following
+command:
 
 ```console
 // For a single apk, use this command
-$ ./gradlew src:<lang>:<source>:assembleDebug
+$ ./gradlew :src:<lang>:<source>:assembleDebug
 ```
+
+Before committing or linting, format all Kotlin files and Gradle scripts to match repository standards:
+
+```console
+$ ./gradlew spotlessApply
+```
+
+As a final check before submitting, run release lint on every Android module you touched:
+
+```console
+$ ./gradlew :src:<lang>:<source>:lintRelease
+```
+
+Run lint directly on shared modules, such as
+`./gradlew :lib-multisrc:<theme>:lintRelease` or `./gradlew :lib:<name>:lintRelease`.
+Linting only an extension that depends on a shared module does not reliably report issues in the
+dependency itself. If you explicitly changed `core/`, run `./gradlew :core:lintRelease` as well.
 
 ## Submitting the changes
 
-When you feel confident about your changes, submit a new Pull Request so your code can be reviewed
-and merged if it's approved. We encourage following a [GitHub Standard Fork & Pull Request Workflow](https://gist.github.com/Chaser324/ce0505fbed06b947d962)
-and following the good practices of the workflow, such as not committing directly to `main`: always
-create a new branch for your changes.
+When you feel confident about your changes, submit a new Pull Request for review. We encourage following a [GitHub Standard Fork & Pull Request Workflow](https://gist.github.com/Chaser324/ce0505fbed06b947d962); avoid committing directly to `main` and always create a new branch for your changes.
 
-If you are more comfortable about using Git GUI-based tools, you can refer to [this guide](https://learntodroid.com/how-to-use-git-and-github-in-android-studio/)
-about the Git integration inside Android Studio, specifically the "How to Contribute to an to Existing
-Git Repository in Android Studio" section of the guide.
+If you prefer using Git GUI-based tools, refer to [this guide](https://learntodroid.com/how-to-use-git-and-github-in-android-studio/)
+about Git integration in Android Studio. Specifically, check the "How to Contribute to an Existing
+Git Repository in Android Studio" section.
 
 > [!IMPORTANT]
-> Make sure you have generated the extension icon using the linked Icon Generator tool in the [Tools](#tools)
-> section. The icon **must follow the pattern** adopted by all other extensions: a square with rounded
-> corners. Make sure to remove the generated `web_hi_res_512.png`.
+> Ensure you have generated the extension icon using the Icon Generator tool in the [Tools](#tools)
+> section. The icon **must follow the pattern** adopted by all extensions: a square with rounded
+> corners. Remove the generated `web_hi_res_512.png`.
 
-Please **do test your changes by compiling it through Android Studio** before submitting it. Obvious
-untested PRs will not be merged, such as ones created with the GitHub web interface. Also make sure
-to follow the PR checklist available in the PR body field when creating a new PR. As a reference, you
-can find it below.
+Please **test your changes by compiling through Android Studio** before submitting. Untested PRs will not be merged. Also, ensure you follow the PR checklist in the PR body field when creating a new PR; it is provided below for reference.
 
 ### Pull Request checklist
 
-- Updated `extVersionCode` value in `build.gradle` for individual extensions
-- Updated `overrideVersionCode` or `baseVersionCode` as needed for all multisrc extensions
+- Updated `versionCode` value in `build.gradle.kts`
+- Updated `baseVersionCode` in `build.gradle.kts` (if updated multisrc theme code)
 - Referenced all related issues in the PR body (e.g. "Closes #xyz")
-- Added the `isNsfw = true` flag in `build.gradle` when appropriate
+- Set the `contentWarning` configuration in `build.gradle.kts` appropriately
 - Have not changed source names
 - Have explicitly kept the `id` if a source's name or language were changed
 - Have tested the modifications by compiling and running the extension through Android Studio
 - Have removed `web_hi_res_512.png` when adding a new extension
+- This PR is AI-assisted, I have reviewed the changes manually and confirmed they are not slop

@@ -1,24 +1,16 @@
 package eu.kanade.tachiyomi.extension.id.manhwadesu
 
 import eu.kanade.tachiyomi.multisrc.mangathemesia.MangaThemesia
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.annotation.Source
+import keiyoushi.network.rateLimit
 import okhttp3.OkHttpClient
 import org.jsoup.nodes.Element
-import java.text.SimpleDateFormat
-import java.util.Locale
 
-class ManhwaDesu :
-    MangaThemesia(
-        "ManhwaDesu",
-        "https://manhwadesu.store",
-        "id",
-        "/komik",
-        SimpleDateFormat("MMMM dd, yyyy", Locale("id")),
-    ) {
+@Source
+abstract class ManhwaDesu : MangaThemesia() {
+    override val mangaUrlDirectory = "/komik"
 
-    override val client: OkHttpClient = super.client.newBuilder()
-        .rateLimit(4)
-        .build()
+    override fun OkHttpClient.Builder.configureClient() = rateLimit(4)
 
     override fun Element.imgAttr(): String {
         attributes()

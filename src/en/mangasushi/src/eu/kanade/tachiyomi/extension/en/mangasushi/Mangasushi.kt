@@ -1,7 +1,9 @@
 package eu.kanade.tachiyomi.extension.en.mangasushi
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
+import keiyoushi.annotation.Source
 
-class Mangasushi : Madara("Mangasushi", "https://mangasushi.org", "en") {
-    override val useNewChapterEndpoint: Boolean = true
+@Source
+abstract class Mangasushi : Madara() {
+    override val chapterMode = ChapterMode.MangaAjax
 }

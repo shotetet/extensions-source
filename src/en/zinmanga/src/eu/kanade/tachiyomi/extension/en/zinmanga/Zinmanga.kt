@@ -1,9 +1,9 @@
 package eu.kanade.tachiyomi.extension.en.zinmanga
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
+import keiyoushi.annotation.Source
 
-class Zinmanga : Madara("Zinmanga", "https://mangazin.org", "en") {
-
-    // The website does not flag the content consistently.
+@Source
+abstract class Zinmanga : Madara() {
     override val filterNonMangaItems = false
 }

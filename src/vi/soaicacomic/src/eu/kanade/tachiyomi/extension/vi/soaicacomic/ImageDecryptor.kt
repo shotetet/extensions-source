@@ -1,14 +1,14 @@
 package eu.kanade.tachiyomi.extension.vi.soaicacomic
 
 import android.util.Base64
+import keiyoushi.utils.aesCbc
+import keiyoushi.utils.aesDecrypt
+import keiyoushi.utils.decodeHex
 import keiyoushi.utils.parseAs
 import kotlinx.serialization.Serializable
 import org.jsoup.Jsoup
-import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
-import javax.crypto.spec.SecretKeySpec
 
 object ImageDecryptor {
 
@@ -19,7 +19,7 @@ object ImageDecryptor {
     private const val PBKDF2_ITERATIONS = 999
     private const val KEY_SIZE_BITS = 256
 
-    private val ENCRYPTED_CONTENT_REGEX = Regex(
+    private val encryptedContentRegex = Regex(
         """var\s+htmlContent\s*=\s*"(.*?)"\s*;""",
         RegexOption.DOT_MATCHES_ALL,
     )
@@ -32,7 +32,7 @@ object ImageDecryptor {
     )
 
     fun extractImageUrls(html: String, baseUrl: String): List<String> {
-        val match = ENCRYPTED_CONTENT_REGEX.find(html)
+        val match = encryptedContentRegex.find(html)
         if (match == null) {
             return extractFallbackImages(html, baseUrl)
         }
@@ -54,8 +54,8 @@ object ImageDecryptor {
         val passphrase = KEY_PART_1 + KEY_PART_2 + KEY_PART_3
 
         val ciphertext = Base64.decode(encryptedData.ciphertext, Base64.DEFAULT)
-        val ivBytes = hexToByteArray(encryptedData.iv)
-        val saltBytes = hexToByteArray(encryptedData.salt)
+        val ivBytes = encryptedData.iv.decodeHex()
+        val saltBytes = encryptedData.salt.decodeHex()
 
         val keySpec = PBEKeySpec(
             passphrase.toCharArray(),
@@ -66,18 +66,11 @@ object ImageDecryptor {
         val keyFactory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512")
         val keyBytes = keyFactory.generateSecret(keySpec).encoded
 
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(
-            Cipher.DECRYPT_MODE,
-            SecretKeySpec(keyBytes, "AES"),
-            IvParameterSpec(ivBytes),
-        )
-
-        return String(cipher.doFinal(ciphertext), Charsets.UTF_8)
+        return ciphertext.aesDecrypt(aesCbc(keyBytes, ivBytes)).decodeToString()
     }
 
     private fun extractImagesFromDecryptedHtml(html: String, baseUrl: String): List<String> {
-        val document = Jsoup.parse(html, baseUrl)
+        val document = Jsoup.parseBodyFragment(html, baseUrl)
 
         return document.select("img").mapNotNull { img ->
             val obfuscated = img.attr("data-p3cr24")
@@ -105,15 +98,5 @@ object ImageDecryptor {
                 .ifEmpty { element.absUrl("src") }
                 .takeIf { it.isNotEmpty() }
         }
-    }
-
-    private fun hexToByteArray(hex: String): ByteArray {
-        val result = ByteArray(hex.length / 2)
-        var index = 0
-        while (index < hex.length) {
-            result[index / 2] = ((Character.digit(hex[index], 16) shl 4) + Character.digit(hex[index + 1], 16)).toByte()
-            index += 2
-        }
-        return result
     }
 }

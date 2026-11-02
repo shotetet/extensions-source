@@ -5,15 +5,17 @@ import eu.kanade.tachiyomi.source.model.SManga
 import keiyoushi.utils.tryParse
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNames
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
-import java.text.SimpleDateFormat
+import java.time.ZoneId
 import java.util.Locale
-import java.util.TimeZone
+import kotlin.time.Instant
+import kotlin.time.toJavaInstant
 
 @Serializable
 class BrowseMangaDto(
@@ -52,13 +54,19 @@ class MangaDto(
     private val title: String,
     @JsonNames("poster", "image")
     private val imagePath: JsonElement,
+    private val largeImage: String?,
 
     // Details
-    private val authors: List<AuthorDto>? = null,
+    private val authors: JsonElement? = null,
     private val synopsis: String? = null,
-    private val genres: List<TagDto>? = null,
+    @JsonNames("genres", "tags")
+    private val genres: JsonElement? = null,
+    private val released: Long? = null,
     private val status: String? = null,
     private val type: String? = null,
+    private val views: JsonElement? = null,
+    private val otherNames: List<String>? = null,
+    private val avgRating: Float? = null,
     val scanlators: List<ScanlatorDto>? = null,
 
     // Chapters
@@ -67,12 +75,38 @@ class MangaDto(
     val recommendations: List<MangaDto>? = null,
 ) {
     private fun getImagePath(): String? {
-        val url = when (imagePath) {
+        val url = largeImage ?: when (imagePath) {
             is JsonPrimitive -> imagePath.content
-            is JsonObject -> imagePath["image"]?.jsonPrimitive?.content
+            is JsonObject -> (imagePath["largeImage"] ?: imagePath["image"])?.jsonPrimitive?.content
             else -> null
         }
         return url?.removePrefix("/")?.removePrefix("static/")
+    }
+
+    private fun parseNames(element: JsonElement?): List<String> = when (element) {
+        is JsonArray -> element.mapNotNull { item ->
+            when (item) {
+                is JsonPrimitive -> item.content
+                is JsonObject -> item["name"]?.jsonPrimitive?.content
+                else -> null
+            }
+        }
+        else -> emptyList()
+    }
+
+    private fun parseAuthorsWithType(element: JsonElement?): List<Pair<String, String?>> = when (element) {
+        is JsonArray -> element.mapNotNull { item ->
+            when (item) {
+                is JsonPrimitive -> Pair(item.content, null)
+                is JsonObject -> {
+                    val name = item["name"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                    val type = item["type"]?.jsonPrimitive?.content
+                    Pair(name, type)
+                }
+                else -> null
+            }
+        }
+        else -> emptyList()
     }
 
     fun toSManga(baseUrl: String): SManga = SManga.create().apply {
@@ -84,44 +118,70 @@ class MangaDto(
                 it.startsWith("//") -> "https:$it"
                 else -> "$baseUrl/static/$it"
             }
-            url.replaceFirst(Regex("^https?:?//"), "https://")
+            url.replaceFirst(PROTOCOL_REGEX, "https://")
         }
-        description = synopsis
+
+        description = buildList {
+            avgRating?.takeIf { it > 0 }?.let {
+                add("**Rating**: %.2f/10".format(Locale.ENGLISH, it))
+            }
+
+            released?.takeIf { it > 0 }?.let {
+                val releaseYear = Instant.fromEpochMilliseconds(it).toJavaInstant()
+                    .atZone(ZoneId.systemDefault()).year
+
+                add("**Year**: $releaseYear")
+            }
+
+            // can be Int or formatted String
+            views?.jsonPrimitive?.content?.let {
+                add("**Views**: $it")
+            }
+
+            synopsis?.takeIf { it.isNotBlank() }?.let {
+                add("\n")
+                add("**Synopsis**: $it")
+            }
+
+            otherNames?.filter { it != this@MangaDto.title }
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { names ->
+                    val namesDesc = names.joinToString("\n") { "- $it" }
+                    add("\n")
+                    add("**Alternative Names**:\n$namesDesc")
+                }
+        }.joinToString("\n")
+
         genre = buildList {
             type?.let { add(it) }
-            genres?.forEach { add(it.name) }
+            addAll(parseNames(genres))
         }.joinToString()
-        authors?.let {
-            author = it.joinToString { author -> author.name }
-        }
-        this@MangaDto.status?.let {
-            status = when (it.lowercase().trim()) {
-                "ongoing" -> SManga.ONGOING
-                "completed" -> SManga.COMPLETED
-                "hiatus" -> SManga.ON_HIATUS
-                "canceled" -> SManga.CANCELLED
-                else -> SManga.UNKNOWN
-            }
+
+        val authorsList = parseAuthorsWithType(authors)
+        author = authorsList.filter { it.second == "Author" || it.second == null }.joinToString { it.first }
+        artist = authorsList.filter { it.second == "Artist" }.joinToString { it.first }
+
+        status = when (this@MangaDto.status?.lowercase()?.trim()) {
+            "ongoing" -> SManga.ONGOING
+            "completed" -> SManga.COMPLETED
+            "hiatus" -> SManga.ON_HIATUS
+            "canceled" -> SManga.CANCELLED
+            else -> SManga.UNKNOWN
         }
     }
 
     fun recommendations(baseUrl: String) = recommendations?.map { it.toSManga(baseUrl) } ?: emptyList()
 
     @Serializable
-    class TagDto(
-        val name: String,
-    )
-
-    @Serializable
-    class AuthorDto(
-        val name: String,
-    )
-
-    @Serializable
     class ScanlatorDto(
         val id: String,
         val name: String,
+        val score: Int,
     )
+
+    companion object {
+        private val PROTOCOL_REGEX = Regex("^https?:?//")
+    }
 }
 
 @Serializable
@@ -132,35 +192,22 @@ class AllChaptersDto(
 @Serializable
 class ChapterDto(
     val id: String,
-    private val number: Float,
+    val number: Float,
     private val title: String,
     val scanlationMangaId: String? = null,
     @SerialName("createdAt") private val date: JsonElement? = null,
 ) {
+    fun dateUploadMillis(): Long = when (date) {
+        is JsonPrimitive -> date.longOrNull ?: Instant.tryParse(date.content)
+        else -> 0L
+    }
+
     fun toSChapter(slug: String, scanlatorName: String? = null): SChapter = SChapter.create().apply {
         url = "$slug/$id"
         chapter_number = number
         name = title
         scanlator = scanlatorName
-        date?.let {
-            date_upload = parseDate(it)
-        }
-    }
-
-    private fun parseDate(dateElement: JsonElement): Long = when (dateElement) {
-        is JsonPrimitive -> {
-            dateElement.longOrNull ?: DATE_FORMAT.tryParse(dateElement.content.replace("T ", "T"))
-        }
-
-        else -> 0L
-    }
-
-    companion object {
-        private val DATE_FORMAT by lazy {
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ENGLISH).apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-            }
-        }
+        date?.let { date_upload = dateUploadMillis() }
     }
 }
 
@@ -180,20 +227,22 @@ class PageDataDto(
 )
 
 @Serializable
-internal class SearchRequest(
-    val page: Int,
-    val filter: SearchFilter,
-)
+class FilterData(
+    val genres: List<Filter>?,
+    val tags: List<Filter>?,
+    val types: List<Filter>?,
+    val statuses: List<Filter>?,
+) {
+    fun getFilterList(excludedGenreIds: Set<String> = emptySet()) = buildList {
+        genres?.let { add(GenreFilter(it.map { Genre(it.name, it.id) }, excludedGenreIds)) }
+        tags?.let { add(TagFilters(it.map { Tag(it.name, it.id) })) }
+        types?.let { add(TypeFilter(it.map { Type(it.name, it.id) })) }
+        statuses?.let { add(StatusFilter(it.map { Status(it.name, it.id) })) }
+    }
+}
 
 @Serializable
-internal class SearchFilter(
-    val search: String? = null,
-    val types: List<String>,
-    val status: List<String>? = null,
-    val includedTags: List<String>? = null,
-    val year: Int? = null,
-    val minChapters: Int? = null,
-    val showAdult: Boolean = false,
-    val officialTranslation: Boolean = false,
-    val sortBy: String? = null,
+class Filter(
+    val id: String,
+    val name: String,
 )

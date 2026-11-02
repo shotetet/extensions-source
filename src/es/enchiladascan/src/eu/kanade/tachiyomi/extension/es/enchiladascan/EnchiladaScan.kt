@@ -1,75 +1,68 @@
 package eu.kanade.tachiyomi.extension.es.enchiladascan
 
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.util.asJsoup
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.asJsoup
 import keiyoushi.utils.parseAs
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
-import okhttp3.Response
-import rx.Observable
-import kotlin.concurrent.Volatile
 
-class EnchiladaScan : HttpSource() {
+@Source
+abstract class EnchiladaScan : KeiSource() {
 
-    override val name = "EnchiladaScan"
-    private val domainUrl = "https://enchiladascan.github.io"
-    override val baseUrl = "$domainUrl/enchiladaweb"
-    override val lang = "es"
+    // Google Drive answers 403 to browser image requests (Sec-Fetch-Dest: image)
+    override val imageFetch = Fetch.NONE
+
     override val supportsLatest = false
 
-    override fun headersBuilder() = super.headersBuilder()
-        .set("Referer", "$baseUrl/")
+    private val domainUrl: String
+        get() = baseUrl.toHttpUrl().let { "${it.scheme}://${it.host}" }
 
-    @Volatile
-    private var catalog: List<Manga> = emptyList()
+    private var catalog: List<Manga>? = null
 
-    @Synchronized
-    private fun fetchCatalog() {
-        if (catalog.isEmpty()) {
-            val result = client.newCall(GET("$baseUrl/catalogo.json")).execute()
-            if (!result.isSuccessful) {
-                throw Exception("Failed to fetch catalog: HTTP ${result.code}")
-            }
-            catalog = result.parseAs<Catalog>().items
-        }
+    private suspend fun fetchCatalog(): List<Manga> = catalog
+        ?: client.get("$baseUrl/catalogo.json", Fetch.XHR).parseAs<Catalog>().items.also { catalog = it }
+
+    // ============================== Popular ==============================
+
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val mangaList = fetchCatalog().map { it.toSManga(baseUrl) }
+        return MangasPage(mangaList, false)
     }
 
-    override fun fetchPopularManga(page: Int): Observable<MangasPage> {
-        fetchCatalog()
-        val mangaList = catalog.map { it.toSManga(baseUrl) }
-        return Observable.just(MangasPage(mangaList, false))
-    }
+    // ============================== Latest ===============================
 
-    override fun popularMangaRequest(page: Int) = throw UnsupportedOperationException()
-    override fun popularMangaParse(response: Response) = throw UnsupportedOperationException()
+    override suspend fun getLatestUpdates(page: Int): MangasPage = throw UnsupportedOperationException()
 
-    override fun latestUpdatesRequest(page: Int): Request = throw UnsupportedOperationException()
-    override fun latestUpdatesParse(response: Response): MangasPage = throw UnsupportedOperationException()
+    // ============================== Search ===============================
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        fetchCatalog()
-        val mangaList = catalog
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
+        val mangaList = fetchCatalog()
             .filter { it.title.contains(query, ignoreCase = true) }
             .map { it.toSManga(baseUrl) }
 
-        return Observable.just(MangasPage(mangaList, false))
+        return MangasPage(mangaList, false)
     }
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = throw UnsupportedOperationException()
-    override fun searchMangaParse(response: Response): MangasPage = throw UnsupportedOperationException()
+    // ============================== Details ==============================
 
-    override fun getMangaUrl(manga: SManga) = "$baseUrl${manga.url}"
-
-    override fun mangaDetailsParse(response: Response): SManga {
-        val document = response.asJsoup()
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val document = client.get(getMangaUrl(manga), Fetch.DOCUMENT).asJsoup()
         val container = document.selectFirst("main.container")!!
-        return SManga.create().apply {
+
+        manga.apply {
             title = container.selectFirst(".manga-title")!!.text()
             thumbnail_url = container.selectFirst(".manga-cover img")!!.attr("abs:src")
             author = container.selectFirst(".manga-meta-list > li:contains(Autor)")?.ownText()
@@ -78,40 +71,41 @@ class EnchiladaScan : HttpSource() {
             status = parseStatus(container.selectFirst(".manga-meta-list > li:contains(Estado)")?.ownText())
             description = container.selectFirst(".manga-sinopsis")?.text()
         }
-    }
 
-    private fun parseStatus(text: String?): Int = when (text?.trim()?.lowercase()) {
-        "en publicación" -> SManga.ONGOING
-        "finalizado" -> SManga.COMPLETED
-        else -> SManga.UNKNOWN
-    }
-
-    override fun getChapterUrl(chapter: SChapter) = "$domainUrl${chapter.url}"
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val document = response.asJsoup()
-        return document.select("ul#chaptersList > li").map { element ->
+        val chapterList = document.select("ul#chaptersList > li").map { element ->
             SChapter.create().apply {
                 setUrlWithoutDomain(element.selectFirst("a")!!.attr("abs:href"))
                 name = element.selectFirst(".cap-title")!!.text()
             }
         }.reversed()
+
+        return SMangaUpdate(manga, chapterList)
     }
 
-    override fun pageListRequest(chapter: SChapter): Request {
+    // ============================= Chapters ==============================
+
+    override fun getChapterUrl(chapter: SChapter) = "$domainUrl${chapter.url}"
+
+    // =============================== Pages ===============================
+
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
         val url = (domainUrl + chapter.url.removeSuffix("/")).toHttpUrl()
         val segments = url.pathSegments
         val mangaSlug = segments[segments.size - 2]
         val chapterSlug = segments.last()
-        return GET("$baseUrl/assets/mangas/$mangaSlug/$chapterSlug/images.json", headers)
+
+        return client.get("$baseUrl/assets/mangas/$mangaSlug/$chapterSlug/images.json", Fetch.XHR)
+            .parseAs<List<String>>()
+            .mapIndexed { index, imageUrl ->
+                Page(index, imageUrl = imageUrl)
+            }
     }
 
-    override fun pageListParse(response: Response): List<Page> {
-        val result = response.parseAs<List<String>>()
-        return result.mapIndexed { index, imageUrl ->
-            Page(index, imageUrl = imageUrl)
-        }
-    }
+    // ============================= Utilities =============================
 
-    override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
+    private fun parseStatus(text: String?): Int = when (text?.lowercase()) {
+        "en publicación" -> SManga.ONGOING
+        "finalizado" -> SManga.COMPLETED
+        else -> SManga.UNKNOWN
+    }
 }

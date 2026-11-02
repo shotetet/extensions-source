@@ -1,10 +1,10 @@
 package eu.kanade.tachiyomi.extension.en.gakamangas
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
+import keiyoushi.annotation.Source
 
-class GakaMangas : Madara("GakaMangas", "https://gakamangas.com", "en") {
-    override val useLoadMoreRequest = LoadMoreStrategy.Never
-    override val useNewChapterEndpoint = true
-
+@Source
+abstract class GakaMangas : Madara() {
     override val filterNonMangaItems = false
+    override val chapterMode = ChapterMode.MangaAjax
 }

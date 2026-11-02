@@ -1,102 +1,80 @@
 package eu.kanade.tachiyomi.extension.vi.dualeotruyen
 
-import android.content.SharedPreferences
-import android.util.Base64
-import android.widget.Toast
-import androidx.preference.EditTextPreference
-import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
-import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.util.asJsoup
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.network.rateLimit
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.asJsoup
 import keiyoushi.utils.firstInstanceOrNull
-import keiyoushi.utils.getPreferences
-import keiyoushi.utils.tryParse
+import keiyoushi.utils.parseAs
+import keiyoushi.utils.toJsonElement
+import keiyoushi.utils.tryParseDate
+import kotlinx.serialization.json.JsonElement
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
-import okhttp3.Response
+import okhttp3.OkHttpClient
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.text.SimpleDateFormat
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
-import java.util.TimeZone
 
-class DuaLeoTruyen :
-    HttpSource(),
-    ConfigurableSource {
-    override val name = "Dưa Leo Truyện"
-    override val lang = "vi"
-    override val supportsLatest = true
-
-    private val defaultBaseUrl = "https://dualeotruyendb.com"
-    private val preferences: SharedPreferences = getPreferences()
-
-    override val baseUrl get() = getPrefBaseUrl()
-
-    init {
-        preferences.getString(DEFAULT_BASE_URL_PREF, null).let { prefDefaultBaseUrl ->
-            if (prefDefaultBaseUrl != defaultBaseUrl) {
-                preferences.edit()
-                    .putString(BASE_URL_PREF, defaultBaseUrl)
-                    .putString(DEFAULT_BASE_URL_PREF, defaultBaseUrl)
-                    .apply()
-            }
-        }
-    }
-
-    override val client = network.cloudflareClient.newBuilder()
-        .rateLimit(5)
-        .build()
-
-    override fun headersBuilder() = super.headersBuilder()
-        .add("Referer", "$baseUrl/")
+@Source
+abstract class DuaLeoTruyen : KeiSource() {
+    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = rateLimit(5)
 
     // ============================== Popular ===============================
 
-    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/truyen-tranh-hot?page=$page", headers)
-
-    override fun popularMangaParse(response: Response): MangasPage = mangaListParse(response)
+    override suspend fun getPopularManga(page: Int): MangasPage = mangaListParse(client.get("$baseUrl/truyen-tranh-hot?page=$page", Fetch.DOCUMENT).asJsoup())
 
     // ============================== Latest ================================
 
-    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/truyen-moi-cap-nhat?page=$page", headers)
-
-    override fun latestUpdatesParse(response: Response): MangasPage = mangaListParse(response)
+    override suspend fun getLatestUpdates(page: Int): MangasPage = mangaListParse(client.get("$baseUrl/truyen-moi-cap-nhat?page=$page", Fetch.DOCUMENT).asJsoup())
 
     // ============================== Search ================================
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
         if (query.isNotBlank()) {
             val url = "$baseUrl/tim-kiem".toHttpUrl().newBuilder()
                 .addQueryParameter("key", query)
                 .build()
-            return GET(url, headers)
+            return mangaListParse(client.get(url, Fetch.DOCUMENT).asJsoup())
         }
 
         val genrePath = filters.firstInstanceOrNull<GenreFilter>()?.toUriPart()
-
-        if (genrePath != null) {
-            return GET("$baseUrl$genrePath?page=$page", headers)
+        return if (genrePath != null) {
+            mangaListParse(client.get("$baseUrl$genrePath?page=$page", Fetch.DOCUMENT).asJsoup())
+        } else {
+            getPopularManga(page)
         }
-
-        return popularMangaRequest(page)
     }
-
-    override fun searchMangaParse(response: Response): MangasPage = mangaListParse(response)
 
     // ============================== Filters ===============================
 
-    override fun getFilterList(): FilterList = getFilters()
+    override val supportsFilterFetching get() = true
+
+    override suspend fun fetchFilterData(): JsonElement = client.get(baseUrl, Fetch.DOCUMENT).asJsoup()
+        .select(".main_menu .sub_menu a[href*=/the-loai/]")
+        .mapNotNull { element ->
+            val name = element.text().takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val path = element.absUrl("href").toHttpUrl().encodedPath
+            GenreOption(name, path)
+        }
+        .distinctBy { it.uriPart }
+        .toJsonElement()
+
+    override fun getFilterList(data: JsonElement?): FilterList = getFilters(data?.parseAs<List<GenreOption>>())
 
     // ============================== List ==================================
 
-    private fun mangaListParse(response: Response): MangasPage {
-        val document = response.asJsoup()
+    private fun mangaListParse(document: Document): MangasPage {
         val mangas = document.select(".box_list .li_truyen").map(::mangaFromElement)
         val hasNextPage = document.selectFirst(".pagination a.next") != null
 
@@ -113,24 +91,21 @@ class DuaLeoTruyen :
 
     // ============================== Details ===============================
 
-    override fun mangaDetailsParse(response: Response): SManga {
-        val document = response.asJsoup()
-
-        return SManga.create().apply {
-            title = document.selectFirst(".box_info_right h1")!!.text()
-            genre = document.select(".list-tag-story a")
-                .joinToString { it.text() }
-                .ifEmpty { null }
-            description = document.selectFirst(".story-detail-info")
-                ?.text()
-                ?.ifEmpty { null }
-            status = parseStatus(
-                document.select(".info-item")
-                    .firstOrNull { it.text().contains("Tình trang") }
-                    ?.text(),
-            )
-            thumbnail_url = document.selectFirst(".box_info_left .img img")?.absUrl("src")
-        }
+    private fun mangaDetailsParse(document: Document, manga: SManga): SManga = SManga.create().apply {
+        setUrlWithoutDomain(manga.url)
+        title = document.selectFirst(".box_info_right h1")!!.text()
+        genre = document.select(".list-tag-story a")
+            .joinToString { it.text() }
+            .ifEmpty { null }
+        description = document.selectFirst(".story-detail-info")
+            ?.text()
+            ?.ifEmpty { null }
+        status = parseStatus(
+            document.select(".info-item")
+                .firstOrNull { it.text().contains("Tình trang") }
+                ?.text(),
+        )
+        thumbnail_url = document.selectFirst(".box_info_left .img img")?.absUrl("src")
     }
 
     private fun parseStatus(statusText: String?): Int {
@@ -146,7 +121,7 @@ class DuaLeoTruyen :
 
     // ============================== Chapters ==============================
 
-    override fun chapterListParse(response: Response): List<SChapter> = response.asJsoup()
+    private fun chapterListParse(document: Document): List<SChapter> = document
         .select(".chapter-item")
         .map { element ->
             SChapter.create().apply {
@@ -157,20 +132,48 @@ class DuaLeoTruyen :
             }
         }
 
-    private fun parseDate(dateStr: String?): Long = DATE_FORMAT.tryParse(dateStr)
+    private fun parseDate(dateStr: String?): Long = dateFormat.tryParseDate(dateStr, dateZone)
+
+    override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
+        if (url.host != baseUrl.toHttpUrl().host || url.pathSegments.firstOrNull() != "truyen-tranh") return null
+
+        val slug = url.pathSegments.getOrNull(1) ?: return null
+        val manga = SManga.create().apply {
+            setUrlWithoutDomain("/truyen-tranh/$slug")
+        }
+        return fetchMangaUpdate(manga, emptyList(), true, false).manga
+    }
+
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val document = client.get("$baseUrl${manga.url}", Fetch.DOCUMENT).asJsoup()
+        return SMangaUpdate(
+            manga = mangaDetailsParse(document, manga),
+            chapters = chapterListParse(document),
+        )
+    }
 
     // ============================== Pages =================================
 
-    override fun pageListParse(response: Response): List<Page> {
-        val document = response.asJsoup()
+    private val imageDecryptor = ImageDecryptor()
 
-        return document.select(".content_view_chap img")
-            .mapNotNull { img ->
-                val dataImg = img.attr("data-img")
-                val src = img.absUrl("src")
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val document = client.get("$baseUrl${chapter.url}", Fetch.DOCUMENT).asJsoup()
+        imageDecryptor.extractSecret(document)
+
+        return document.select(".content_view_chap img, .content_view_chap canvas")
+            .mapNotNull { element ->
+                val dataImg = element.absUrl("data-img")
+                    .ifEmpty { element.absUrl("data-canvas-img") }
+                    .ifEmpty { element.attr("data-img").ifEmpty { element.attr("data-canvas-img") } }
+                val src = element.absUrl("src")
 
                 when {
-                    dataImg.isNotBlank() -> decryptImageUrl(dataImg)
+                    dataImg.isNotBlank() -> imageDecryptor.decryptImageUrl(dataImg)
                     src.isNotBlank() && !src.startsWith("data:") -> src
                     else -> null
                 }
@@ -181,64 +184,6 @@ class DuaLeoTruyen :
             }
     }
 
-    private fun decryptImageUrl(url: String): String? {
-        val lastSlashIndex = url.lastIndexOf('/')
-        val dotIndex = url.lastIndexOf('.')
-        if (lastSlashIndex == -1 || dotIndex == -1 || dotIndex <= lastSlashIndex) return null
-
-        val basePath = url.substring(0, lastSlashIndex + 1)
-        val encodedName = url.substring(lastSlashIndex + 1, dotIndex)
-        val extension = url.substring(dotIndex)
-
-        val base64 = encodedName.replace('-', '+').replace('_', '/')
-        val decoded = try {
-            Base64.decode(base64, Base64.DEFAULT)
-        } catch (_: Exception) {
-            return url
-        }
-
-        val decrypted = ByteArray(decoded.size) { i ->
-            (decoded[i].toInt() xor DECRYPT_SALT[i % DECRYPT_SALT.length].code).toByte()
-        }
-
-        val decryptedName = String(decrypted, Charsets.UTF_8)
-        return "$basePath$decryptedName$extension"
-    }
-
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
-
-    // ============================== Preferences ===========================
-
-    override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        EditTextPreference(screen.context).apply {
-            key = BASE_URL_PREF
-            title = BASE_URL_PREF_TITLE
-            summary = BASE_URL_PREF_SUMMARY
-            setDefaultValue(defaultBaseUrl)
-            dialogTitle = BASE_URL_PREF_TITLE
-            dialogMessage = "Default: $defaultBaseUrl"
-
-            setOnPreferenceChangeListener { _, _ ->
-                Toast.makeText(screen.context, RESTART_APP, Toast.LENGTH_LONG).show()
-                true
-            }
-        }.let(screen::addPreference)
-    }
-
-    private fun getPrefBaseUrl(): String = preferences.getString(BASE_URL_PREF, defaultBaseUrl)!!
-
-    companion object {
-        private const val DEFAULT_BASE_URL_PREF = "defaultBaseUrl"
-        private const val BASE_URL_PREF = "overrideBaseUrl"
-        private const val BASE_URL_PREF_TITLE = "Ghi đè URL cơ sở"
-        private const val BASE_URL_PREF_SUMMARY =
-            "Dành cho sử dụng tạm thời, cập nhật tiện ích sẽ xóa cài đặt."
-        private const val RESTART_APP = "Khởi chạy lại ứng dụng để áp dụng thay đổi."
-
-        private const val DECRYPT_SALT = "dualeo_salt_2025"
-
-        private val DATE_FORMAT = SimpleDateFormat("dd/MM/yyyy", Locale.ROOT).apply {
-            timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
-        }
-    }
+    private val dateFormat = DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.ROOT)
+    private val dateZone = ZoneId.of("Asia/Ho_Chi_Minh")
 }

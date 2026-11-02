@@ -1,5 +1,9 @@
 package eu.kanade.tachiyomi.extension.en.galaxydegenscans
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
+import keiyoushi.annotation.Source
 
-class GalaxyDegenScans : Madara("GalaxyDegenScans", "https://gdscans.com", "en")
+@Source
+abstract class GalaxyDegenScans : Madara() {
+    override val chapterMode = ChapterMode.MangaAjax
+}

@@ -1,52 +1,46 @@
 package eu.kanade.tachiyomi.extension.ja.mangagun
 
+import android.util.Base64
 import eu.kanade.tachiyomi.multisrc.fmreader.FMReader
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.asObservableSuccess
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.util.asJsoup
-import keiyoushi.lib.cookieinterceptor.CookieInterceptor
-import okhttp3.Request
-import okhttp3.Response
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.addCookie
+import keiyoushi.network.get
+import keiyoushi.utils.asJsoup
+import okhttp3.OkHttpClient
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import rx.Observable
 import java.util.Calendar
 
-private const val DOMAIN = "nihonkuni.com"
-
-/**
- * This plugin is for the website originally named MangaGun(漫画軍), which was later renamed to NihonKuni(日本国). Please do not be confused by the names.
- */
-class MangaGun : FMReader("NihonKuni", "https://$DOMAIN", "ja") {
-
-    // Formerly "MangaGun(漫画軍)"
-    override val id = 3811800324362294701
+@Source
+abstract class MangaGun : FMReader() {
 
     override val infoElementSelector = "div.manga-detail-container"
     override val mangaDetailsSelectorDescription = ".description-text-content, .manga-info-list > li:nth-child(1) .info-field-value"
 
-    override val client = super.client.newBuilder()
-        .addNetworkInterceptor(CookieInterceptor(DOMAIN, "smartlink_shown" to "1")).build()
+    // The title is base64 encoded and filled in by JS
+    override fun parseMangaTitle(document: Document): String? = document.selectFirst("h1.manga-main-title")
+        ?.attr("data-enc")
+        ?.let { String(Base64.decode(it, Base64.DEFAULT)) }
+
+    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = addCookie("smartlink_shown" to "1")
 
     // source is picky about URL format
-    private fun mangaRequest(sortBy: String, page: Int): Request = GET(
-        "$baseUrl/manga-list.html?listType=pagination&page=$page&artist=&author=&group=&m_status=&name=&genre=&ungenre=&magazine=&sort=$sortBy&sort_type=DESC",
-        headers,
-    )
+    private fun mangaUrl(sortBy: String, page: Int) = "$baseUrl/manga-list.html?listType=pagination&page=$page&artist=&author=&group=&m_status=&name=&genre=&ungenre=&magazine=&sort=$sortBy&sort_type=DESC"
 
-    override fun popularMangaRequest(page: Int): Request = mangaRequest("views", page)
+    override fun popularMangaUrl(page: Int) = mangaUrl("views", page)
 
-    override fun latestUpdatesRequest(page: Int): Request = mangaRequest("last_update", page)
+    override fun latestUpdatesUrl(page: Int) = mangaUrl("last_update", page)
 
     override fun popularMangaSelector() = "div.manga-grid div.manga-card"
 
     override fun popularMangaNextPageSelector() = ".page-link.next"
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
+    override fun popularMangaParse(document: Document): MangasPage {
         val mangas = document.select(popularMangaSelector()).map { popularMangaFromElement(it) }
         val hasNextPage = document.select(popularMangaNextPageSelector()).first()?.hasAttr("href") ?: false
         return MangasPage(mangas, hasNextPage)
@@ -77,7 +71,7 @@ class MangaGun : FMReader("NihonKuni", "https://$DOMAIN", "ja") {
         else -> element.attr("abs:src")
     }
 
-    override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
+    override suspend fun fetchChapterList(manga: SManga, mangaPage: Document): List<SChapter> {
         val index = manga.url.indexOf("manga-")
         // Handling version compatibility, previous version used the 'raw-' prefix.
         val slug = if (index >= 0) {
@@ -86,22 +80,13 @@ class MangaGun : FMReader("NihonKuni", "https://$DOMAIN", "ja") {
             manga.url.substringAfter("raw-")
         }.substringBefore(".html")
 
-        return client.newCall(
-            GET(
-                "$baseUrl/app/manga/controllers/cont.Listchapter.php?slug=$slug",
-                headers,
-            ),
-        )
-            .asObservableSuccess()
-            .map { res ->
-                res.asJsoup().select(".at-series a").map {
-                    SChapter.create().apply {
-                        name = it.select(".chapter-name").text()
-                        url = it.attr("abs:href").substringAfter("controllers")
-                        date_upload = parseChapterDate(it.select(".chapter-time").text())
-                    }
-                }
+        return client.get("$baseUrl/app/manga/controllers/cont.Listchapter.php?slug=$slug", Fetch.DOCUMENT).asJsoup().select(".at-series a").map {
+            SChapter.create().apply {
+                name = it.select(".chapter-name").text()
+                url = it.attr("abs:href").substringAfter("controllers")
+                date_upload = parseChapterDate(it.select(".chapter-time").text())
             }
+        }
     }
 
     private fun parseChapterDate(date: String): Long {
@@ -124,8 +109,7 @@ class MangaGun : FMReader("NihonKuni", "https://$DOMAIN", "ja") {
         return chapterDate.timeInMillis
     }
 
-    override fun pageListParse(response: Response): List<Page> {
-        val document = response.asJsoup()
+    override fun pageListParse(document: Document): List<Page> {
         val images = document.select("img[id~=page\\d+]")
 
         return images.mapIndexed { index, element ->

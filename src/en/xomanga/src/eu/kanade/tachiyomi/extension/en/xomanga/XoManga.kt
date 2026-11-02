@@ -1,66 +1,90 @@
 package eu.kanade.tachiyomi.extension.en.xomanga
 
-import eu.kanade.tachiyomi.network.GET
+import androidx.preference.PreferenceScreen
+import androidx.preference.SwitchPreferenceCompat
+import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
-import okhttp3.Response
 
-class XoManga : HttpSource() {
-    override val baseUrl = "https://www.xomanga.site"
-    override val lang = "en"
-    override val supportsLatest = true
-    override val name = "XoManga"
+@Source
+abstract class XoManga :
+    KeiSource(),
+    ConfigurableSource {
+    private val preferences by getPreferencesLazy()
 
-    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/our-works.html", headers)
+    // ============================== Popular ===============================
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        val block = EXCLUSIVE_REGEX.find(response.body.string())?.groupValues?.get(1) ?: return MangasPage(emptyList(), false)
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val body = client.get("$baseUrl/our-works", Fetch.DOCUMENT).body.string()
+        val block = EXCLUSIVE_REGEX.find(body)?.groupValues?.get(1) ?: return MangasPage(emptyList(), false)
         val exclusiveTitles = QUOTED_REGEX.findAll(block).map { it.groupValues[1].lowercase().trim().replace(Regex("""\s+"""), " ") }.toSet()
-        val index = client.newCall(GET("$baseUrl/index.json", headers)).execute().parseAs<IndexResponse>()
+        val index = client.get("$baseUrl/index.json", Fetch.XHR).parseAs<IndexResponse>()
         val mangas = index.latest.filter { it.isExclusive(exclusiveTitles) }.map { it.toSManga(baseUrl) }
         return MangasPage(mangas, false)
     }
 
-    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/index.json", headers)
+    // =============================== Latest ===============================
 
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        val result = response.parseAs<IndexResponse>()
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
+        val result = client.get("$baseUrl/index.json", Fetch.XHR).parseAs<IndexResponse>()
         val mangas = result.latest.map { it.toSManga(baseUrl) }
         return MangasPage(mangas, false)
     }
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = "$baseUrl/index.json".toHttpUrl().newBuilder()
-            .fragment(query.trim())
-            .build()
-        return GET(url, headers)
-    }
+    // =============================== Search ===============================
 
-    override fun searchMangaParse(response: Response): MangasPage {
-        val query = response.request.url.fragment?.lowercase().orEmpty()
-        val result = response.parseAs<IndexResponse>()
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
+        val result = client.get("$baseUrl/index.json", Fetch.XHR).parseAs<IndexResponse>()
         val mangas = result.latest
             .filter { it.matchesQuery(query) }
             .map { it.toSManga(baseUrl) }
         return MangasPage(mangas, false)
     }
 
-    override fun mangaDetailsRequest(manga: SManga): Request = GET("$baseUrl/manga/${manga.url}/details.json", headers)
+    override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
+        val id = url.queryParameter("id") ?: return null
+        val manga = SManga.create().apply {
+            this.url = id
+        }
 
-    override fun mangaDetailsParse(response: Response): SManga = response.parseAs<DetailsResponse>().toSManga()
+        return getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = false)
+            .manga
+            .apply {
+                initialized = true
+                this.url = id
+            }
+    }
+
+    // =========================== Manga Updates ============================
+
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val details = client.get("$baseUrl/manga/${manga.url}/details.json", Fetch.XHR).parseAs<DetailsResponse>()
+        val hideVip = hideVIP()
+
+        return SMangaUpdate(
+            manga = details.toSManga(),
+            chapters = details.chaptersList.mapNotNull { it.toSChapter(baseUrl, hideVip) },
+        )
+    }
 
     override fun getMangaUrl(manga: SManga): String = "$baseUrl/details.html?id=${manga.url}"
-
-    override fun chapterListRequest(manga: SManga): Request = mangaDetailsRequest(manga)
-
-    override fun chapterListParse(response: Response): List<SChapter> = response.parseAs<ChapterResponse>().chaptersList.map { it.toSChapter(baseUrl) }
 
     override fun getChapterUrl(chapter: SChapter): String {
         val url = "$baseUrl/${chapter.url}".toHttpUrl()
@@ -74,24 +98,38 @@ class XoManga : HttpSource() {
         return chapterUrl
     }
 
-    override fun pageListRequest(chapter: SChapter): Request {
+    // =============================== Pages ================================
+
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
         val url = "$baseUrl/${chapter.url}".toHttpUrl()
         val slug = url.pathSegments.first()
         val chapterNum = url.fragment
-        return GET("$baseUrl/manga/$slug/chapters/$chapterNum.json", headers)
-    }
+        val images = client.get("$baseUrl/manga/$slug/chapters/$chapterNum.json", Fetch.XHR)
+            .parseAs<ImageResponse>().images
 
-    override fun pageListParse(response: Response): List<Page> {
-        val images = response.parseAs<ImageResponse>().images
         return images.mapIndexed { i, url ->
             Page(i, imageUrl = url)
         }
     }
 
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
+    // ============================== Preferences ==============================
+    private fun hideVIP(): Boolean = preferences.getBoolean(HIDE_LOCKED_CHAPTERS, true)
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        SwitchPreferenceCompat(screen.context).apply {
+            key = HIDE_LOCKED_CHAPTERS
+            title = HIDE_LOCKED_CHAPTERS_TITLE
+            summaryOn = HIDE_LOCKED_CHAPTERS_SUM_ON
+            summaryOff = HIDE_LOCKED_CHAPTERS_SUM_OFF
+            setDefaultValue(true)
+        }.let(screen::addPreference)
+    }
 
     companion object {
         private val EXCLUSIVE_REGEX = Regex("""myExclusiveWorksTitles\s*=\s*\[([^]]+)]""", RegexOption.DOT_MATCHES_ALL)
         private val QUOTED_REGEX = Regex("""["']([^"'\n]+)["']""")
+        const val HIDE_LOCKED_CHAPTERS = "hide_vip_chapters"
+        const val HIDE_LOCKED_CHAPTERS_TITLE = "Hide VIP chapters"
+        const val HIDE_LOCKED_CHAPTERS_SUM_ON = "Chapters will be hidden"
+        const val HIDE_LOCKED_CHAPTERS_SUM_OFF = "Chapters will be marked with an icon: \uD83D\uDD12"
     }
 }

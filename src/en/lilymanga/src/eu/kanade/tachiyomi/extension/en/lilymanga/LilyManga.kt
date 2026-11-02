@@ -1,27 +1,22 @@
 package eu.kanade.tachiyomi.extension.en.lilymanga
 
-import eu.kanade.tachiyomi.multisrc.madara.Madara
-import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
+import eu.kanade.tachiyomi.multisrc.madara.MadaraNoAjax
+import keiyoushi.annotation.Source
+import keiyoushi.network.rateLimit
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import java.text.SimpleDateFormat
+import okhttp3.OkHttpClient
+import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.time.Duration.Companion.seconds
 
-class LilyManga :
-    Madara(
-        "Lily Manga",
-        "https://lilymanga.net",
-        "en",
-        dateFormat = SimpleDateFormat("dd.MM.yyyy", Locale.US),
-    ) {
-    override val client = super.client.newBuilder()
-        .rateLimitHost(baseUrl.toHttpUrl(), 1, 2)
-        .build()
+@Source
+abstract class LilyManga : MadaraNoAjax() {
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("dd.MM.yyyy", Locale.US)
+    override val genreDirectory = "gl-genre"
+    override val mangaSubString = "gl"
+    override val chapterMode = ChapterMode.MangaAjax
 
-    override val mangaSubString = "ys"
-
-    override fun searchMangaSelector() = popularMangaSelector()
-
-    override val useNewChapterEndpoint = true
-
-    override val useLoadMoreRequest = LoadMoreStrategy.Never
+    override fun OkHttpClient.Builder.configureClient() = rateLimit(1, 2.seconds) {
+        it.host == baseUrl.toHttpUrl().host
+    }
 }

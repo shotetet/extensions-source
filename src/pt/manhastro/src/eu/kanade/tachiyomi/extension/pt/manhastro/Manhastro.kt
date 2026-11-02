@@ -1,198 +1,132 @@
 package eu.kanade.tachiyomi.extension.pt.manhastro
 
-import android.app.Application
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import androidx.preference.PreferenceScreen
+import androidx.preference.SwitchPreferenceCompat
+import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.network.rateLimit
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.firstInstance
+import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
-import keiyoushi.utils.tryParse
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.json.Json
-import okhttp3.Cache
-import okhttp3.CacheControl
+import keiyoushi.utils.tryParseDateTime
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.serialization.json.JsonElement
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
-import okhttp3.Response
 import okhttp3.brotli.BrotliInterceptor
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
-import uy.kohesive.injekt.injectLazy
-import java.io.File
-import java.text.SimpleDateFormat
+import java.time.format.DateTimeFormatter
 import java.util.Locale
-import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.seconds
 
-class Manhastro : HttpSource() {
-
-    override val name = "Manhastro"
-
-    override val baseUrl = "https://manhastro.net"
+@Source
+abstract class Manhastro :
+    KeiSource(),
+    ConfigurableSource {
 
     private val apiUrl = "https://api2.manhastro.net"
 
-    override val lang = "pt-BR"
+    private val preferences by getPreferencesLazy()
 
-    override val supportsLatest = true
-
-    private val json: Json by injectLazy()
-
-    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
-        .rateLimit(2)
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .apply {
-            val index = networkInterceptors().indexOfFirst { it is BrotliInterceptor }
-            if (index >= 0) interceptors().add(networkInterceptors().removeAt(index))
-        }
-        .build()
-
-    private val dataClient = client.newBuilder()
-        .cache(
-            Cache(
-                directory = File(Injekt.get<Application>().externalCacheDir, "network_cache_${name.lowercase()}"),
-                maxSize = 10L * 1024 * 1024, // 10 MiB
-            ),
-        )
-        .addNetworkInterceptor { chain ->
-            chain.proceed(chain.request()).newBuilder()
-                .removeHeader("Cache-Control")
-                .removeHeader("Expires")
-                .removeHeader("Pragma")
-                .build()
-        }
-        .build()
+    override fun OkHttpClient.Builder.configureClient() = apply {
+        connectTimeout(30.seconds)
+        readTimeout(30.seconds)
+        val index = networkInterceptors().indexOfFirst { it is BrotliInterceptor }
+        if (index >= 0) interceptors().add(networkInterceptors().removeAt(index))
+        rateLimit(2)
+    }
 
     // ============================== Popular ==============================
 
-    override fun popularMangaRequest(page: Int) = GET("$apiUrl/rank/diario", headers)
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val result = client.get("$apiUrl/rank/diario", Fetch.XHR)
+            .parseAs<ApiResponse<List<MangaDto>>>(transform = ::cleanJsonResponse)
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        val result = response.parseAs<ApiResponse<List<RankingItemDto>>>(transform = ::cleanJsonResponse)
-        val mangaIds = result.data.map { it.mangaId }
-        val mangaMap = fetchMangasByIds(mangaIds)
-
-        val mangas = result.data.mapNotNull { mangaMap[it.mangaId]?.toSManga() }
-
-        return MangasPage(mangas, false)
+        return MangasPage(result.data.map { it.toSManga() }, false)
     }
 
     // ============================== Latest ==============================
 
-    override fun latestUpdatesRequest(page: Int) = GET("$apiUrl/lancamentos", headers)
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
+        val result = client.get("$apiUrl/lancamentos", Fetch.XHR)
+            .parseAs<ApiResponse<List<MangaDto>>>(transform = ::cleanJsonResponse)
 
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        val result = response.parseAs<ApiResponse<List<LatestItemDto>>>(transform = ::cleanJsonResponse)
-        val mangaIds = result.data.map { it.mangaId }.distinct()
-        val mangaMap = fetchMangasByIds(mangaIds)
-
-        val mangas = mangaIds.mapNotNull { mangaMap[it]?.toSManga() }
-
-        return MangasPage(mangas, false)
+        return MangasPage(result.data.distinctBy { it.mangaId }.map { it.toSManga() }, false)
     }
 
     // ============================== Search ==============================
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList) = throw UnsupportedOperationException()
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
+        val url = "$apiUrl/dados".toHttpUrl().newBuilder().apply {
+            addQueryParameter("page", page.toString())
+            if (query.isNotBlank()) addQueryParameter("nome", query)
 
-    override fun searchMangaParse(response: Response) = throw UnsupportedOperationException()
+            val sort = filters.firstInstance<SortFilter>()
+            addQueryParameter("sort", sort.selected)
+            addQueryParameter("order", sort.order)
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList) = rx.Observable.fromCallable {
-        var mangas = fetchAllMangas()
+            filters.firstInstance<TypeFilter>().state.filter { it.state }.map { it.value }
+                .takeIf { it.isNotEmpty() }
+                ?.let { addQueryParameter("categoria", it.joinToString(",")) }
+            filters.firstInstance<GenreFilter>().state.filter { it.state }.map { it.value }
+                .takeIf { it.isNotEmpty() }
+                ?.let { addQueryParameter("genero", it.joinToString(",")) }
+        }.build()
 
-        if (query.isNotBlank()) {
-            val q = query.lowercase().normalize()
-            mangas = mangas.filter { manga ->
-                val titulo = manga.titulo.lowercase().normalize()
-                val tituloBrasil = manga.tituloBrasil?.lowercase()?.normalize() ?: ""
-                titulo.contains(q) || tituloBrasil.contains(q)
-            }
-        }
-
-        val typeFilter = filters.filterIsInstance<TypeFilter>().firstOrNull()
-        val genreFilter = filters.filterIsInstance<GenreFilter>().firstOrNull()
-        val sortFilter = filters.filterIsInstance<SortFilter>().firstOrNull()
-
-        val selectedTypes = typeFilter?.state?.filter { it.state }?.map { it.value } ?: emptyList()
-        if (selectedTypes.isNotEmpty()) {
-            mangas = mangas.filter { manga ->
-                val mangaGenres = parseGenres(manga.generos)
-                selectedTypes.any { type ->
-                    mangaGenres.any { it.equals(type, ignoreCase = true) }
-                }
-            }
-        }
-
-        val selectedGenres = genreFilter?.state?.filter { it.state }?.map { it.value } ?: emptyList()
-        if (selectedGenres.isNotEmpty()) {
-            mangas = mangas.filter { manga ->
-                val mangaGenres = parseGenres(manga.generos)
-                selectedGenres.all { genre ->
-                    mangaGenres.any { it.equals(genre, ignoreCase = true) }
-                }
-            }
-        }
-
-        val sortOption = sortFilter?.selected ?: "popular"
-        mangas = when (sortOption) {
-            "popular" -> mangas.sortedByDescending { it.popularity }
-            "recent" -> mangas.sortedByDescending { it.mangaId }
-            "alphabetical" -> mangas.sortedBy { it.displayTitle.lowercase() }
-            "chapters" -> mangas.sortedByDescending { it.qntCapitulo ?: 0 }
-            else -> mangas
-        }
-
-        MangasPage(mangas.map { it.toSManga() }, false)
-    }!!
-
-    private fun parseGenres(generos: String?): List<String> {
-        if (generos.isNullOrBlank()) return emptyList()
-
-        return try {
-            json.decodeFromString<List<String>>(generos)
-        } catch (_: Exception) {
-            if (generos.contains(",")) {
-                generos.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-            } else {
-                listOf(generos.trim()).filter { it.isNotEmpty() }
-            }
-        }
+        val result = client.get(url, Fetch.XHR).parseAs<ApiResponse<List<MangaDto>>>(transform = ::cleanJsonResponse)
+        return MangasPage(result.data.map { it.toSManga() }, result.meta?.hasMore ?: false)
     }
 
-    private fun String.normalize(): String = java.text.Normalizer.normalize(this, java.text.Normalizer.Form.NFD)
-        .replace(Regex("[\\p{InCombiningDiacriticalMarks}]"), "")
-
-    override fun getFilterList() = getFilters()
+    override fun getFilterList(data: JsonElement?) = getFilters()
 
     // ============================== Details ==============================
 
-    override fun mangaDetailsRequest(manga: SManga) = throw UnsupportedOperationException()
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate = coroutineScope {
+        val mangaId = manga.url.substringAfterLast("/")
 
-    override fun mangaDetailsParse(response: Response) = throw UnsupportedOperationException()
+        val details = async {
+            if (fetchDetails) {
+                client.get("$apiUrl/dados?manga_id=$mangaId", Fetch.XHR)
+                    .parseAs<ApiResponse<List<MangaDto>>>(transform = ::cleanJsonResponse)
+                    .data.firstOrNull()?.toSManga()
+                    ?: throw Exception("Manga not found")
+            } else {
+                manga
+            }
+        }
+        val chapterList = async {
+            if (fetchChapters) fetchChapterList(mangaId) else chapters
+        }
 
-    override fun fetchMangaDetails(manga: SManga) = rx.Observable.fromCallable {
-        val mangaId = manga.url.substringAfterLast("/").toInt()
-        val allMangas = fetchAllMangas()
-        allMangas.find { it.mangaId == mangaId }?.toSManga()
-            ?: throw Exception("Manga not found")
-    }!!
+        SMangaUpdate(details.await(), chapterList.await())
+    }
 
     // ============================== Chapters ==============================
 
-    override fun chapterListRequest(manga: SManga) = GET("$apiUrl/dados/${manga.url.substringAfterLast("/")}", headers)
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val result = response.parseAs<ApiResponse<List<ChapterDto>>>(transform = ::cleanJsonResponse)
+    private suspend fun fetchChapterList(mangaId: String): List<SChapter> {
+        val result = client.get("$apiUrl/dados/$mangaId", Fetch.XHR)
+            .parseAs<ApiResponse<List<ChapterDto>>>(transform = ::cleanJsonResponse)
 
         return result.data.map { chapter ->
             SChapter.create().apply {
                 url = "/capitulo/${chapter.capituloId}"
                 name = chapter.capituloNome
                 chapter_number = extractChapterNumber(chapter.capituloNome)
-                date_upload = DATE_FORMAT.tryParse(chapter.capituloData)
+                date_upload = DATE_FORMAT.tryParseDateTime(chapter.capituloData)
             }
         }.sortedByDescending { it.chapter_number }
     }
@@ -205,18 +139,15 @@ class Manhastro : HttpSource() {
 
     // ============================== Pages ==============================
 
-    override fun pageListRequest(chapter: SChapter) = GET("$apiUrl/paginas/${chapter.url.substringAfterLast("/")}", headers)
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val result = client.get("$apiUrl/paginas/${chapter.url.substringAfterLast("/")}", Fetch.XHR)
+            .parseAs<PagesResponse>(transform = ::cleanJsonResponse)
+        val chapterData = result.data.chapter ?: return emptyList()
 
-    override fun pageListParse(response: Response): List<Page> {
-        val result = response.parseAs<PagesResponse>(transform = ::cleanJsonResponse)
-        val chapter = result.data.chapter ?: return emptyList()
-
-        return chapter.data.mapIndexed { i, filename ->
-            Page(i, imageUrl = "${chapter.baseUrl}/${chapter.hash}/$filename")
+        return chapterData.data.mapIndexed { i, filename ->
+            Page(i, imageUrl = "${chapterData.baseUrl}/${chapterData.hash}/$filename")
         }
     }
-
-    override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
 
     // ============================== URLs ==============================
 
@@ -238,31 +169,38 @@ class Manhastro : HttpSource() {
         .removePrefix("_")
         .trim()
 
-    private fun fetchAllMangas(): List<MangaDto> {
-        val request = GET(
-            "$apiUrl/dados",
-            headers,
-            CacheControl.Builder().maxStale(30, TimeUnit.MINUTES).build(),
-        )
-        val response = dataClient.newCall(request).execute()
-        return response.parseAs<ApiResponse<List<MangaDto>>>(transform = ::cleanJsonResponse).data
-    }
-
-    private fun fetchMangasByIds(ids: List<Int>): Map<Int, MangaDto> {
-        val allMangas = fetchAllMangas()
-        return allMangas.filter { it.mangaId in ids }.associateBy { it.mangaId }
-    }
-
     private fun MangaDto.toSManga() = SManga.create().apply {
         url = "/manga/$mangaId"
-        title = displayTitle
+        title = if (useEnglishTitle) {
+            titulo.takeIf { it.isNotBlank() } ?: displayTitle
+        } else {
+            displayTitle
+        }
         description = displayDescription
-        genre = parseGenres(generos).joinToString()
+        genre = generos.joinToString()
         thumbnail_url = thumbnailUrl
-        status = SManga.UNKNOWN
+        status = when (this@toSManga.status) {
+            "on-going" -> SManga.ONGOING
+            "end" -> SManga.COMPLETED
+            else -> SManga.UNKNOWN
+        }
+    }
+
+    private val useEnglishTitle: Boolean
+        get() =
+            preferences.getBoolean(ENGLISH_TITLE_PREF, false)
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        SwitchPreferenceCompat(screen.context).apply {
+            key = ENGLISH_TITLE_PREF
+            title = "Títulos em inglês"
+            summary = "Use títulos em inglês como principal quando disponível. (Requer ativar \"Atualizar os títulos dos mangás da biblioteca para corresponder à fonte\" em \"Avançado\")"
+            setDefaultValue(false)
+        }.also(screen::addPreference)
     }
 
     companion object {
-        private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT)
+        private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-M-d H:mm:ss", Locale.ROOT)
+        private const val ENGLISH_TITLE_PREF = "englishTitlePref"
     }
 }

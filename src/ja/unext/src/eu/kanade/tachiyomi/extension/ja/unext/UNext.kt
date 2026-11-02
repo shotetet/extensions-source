@@ -1,341 +1,279 @@
 package eu.kanade.tachiyomi.extension.ja.unext
 
-import android.annotation.SuppressLint
-import android.app.Application
-import android.content.SharedPreferences
-import android.os.Handler
-import android.os.Looper
-import android.webkit.JavascriptInterface
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.util.Base64
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.post
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.GraphQLErrorInterceptor
+import keiyoushi.utils.GraphQLException
+import keiyoushi.utils.aesCbc
+import keiyoushi.utils.decodeHex
 import keiyoushi.utils.getPreferencesLazy
+import keiyoushi.utils.graphQLGet
+import keiyoushi.utils.hmacSha256
 import keiyoushi.utils.parseAs
+import keiyoushi.utils.parseGraphQLAs
+import keiyoushi.utils.persistedQueryExtension
+import keiyoushi.utils.readIntLittleEndian
+import keiyoushi.utils.sha256
+import keiyoushi.utils.string
+import keiyoushi.utils.toJsonRequestBody
 import keiyoushi.utils.toJsonString
-import okhttp3.CacheControl
+import keiyoushi.zip.Entry
+import keiyoushi.zip.coroutines.readZipEntry
+import keiyoushi.zip.coroutines.zipDirectory
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import okhttp3.CacheControl.Companion.FORCE_NETWORK
+import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
-import okhttp3.Response
-import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
+import okio.buffer
+import java.security.KeyPairGenerator
+import java.security.spec.MGF1ParameterSpec
+import javax.crypto.Cipher
+import javax.crypto.spec.OAEPParameterSpec
+import javax.crypto.spec.PSource
+import kotlin.random.Random
 
-class UNext :
-    HttpSource(),
+@Source
+abstract class UNext :
+    KeiSource(),
     ConfigurableSource {
-    override val name = "U-NEXT"
-    private val domain = "unext.jp"
-    override val baseUrl = "https://video.$domain"
-    override val lang = "ja"
-    override val supportsLatest = true
-
-    private val apiUrl = "https://cc.$domain"
-    private val preferences: SharedPreferences by getPreferencesLazy()
-
-    // Paid chapters redirect to the app on mobile UA, but are readable with desktop UA
-    override fun headersBuilder() = super.headersBuilder()
-        .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
-
-    override val client = network.cloudflareClient.newBuilder()
-        .addInterceptor(ImageInterceptor())
-        .addInterceptor { chain ->
-            var request = chain.request()
-            var response = chain.proceed(request)
-            var retryCount = 0
-
-            // API request for details sometimes gives "PersistedQueryNotFound" but works after 1-2 retries
-            while (retryCount < 5 && request.url.host == "cc.unext.jp" && response.isSuccessful) {
-                val contentType = response.body.contentType()
-                if (contentType?.subtype == "json") {
-                    val bodyString = response.peekBody(Long.MAX_VALUE).string()
-                    if (bodyString.contains("PersistedQueryNotFound")) {
-                        response.close()
-                        retryCount++
-                        request = request.newBuilder().build()
-                        response = chain.proceed(request)
-                        continue
-                    }
-                }
-                break
-            }
-            response
-        }
+    private val apiUrl get() = "https://cc.unext.jp"
+    private val preferences by getPreferencesLazy()
+    private val apiHeaders get() = headersBuilder()
+        .set("Content-Type", "application/json")
+        .set("Apollographql-Client-Name", "cosmo")
         .build()
 
-    override fun popularMangaRequest(page: Int): Request {
-        val payload = Payload(
-            "cosmo_getBookRanking",
-            PopularVariables("D_C_COMIC", page, 20),
-            Payload.Extensions(
-                Payload.Extensions.PersistedQuery(1, POPULAR_QUERY_HASH),
-            ),
-        )
-        return apiRequest(payload)
+    private val keyPair by lazy {
+        KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
     }
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        val result = response.parseAs<PopularResponse>().data.bookRanking
+    // Paid chapters redirect to the app on mobile UA, but are readable with desktop UA
+    override fun Headers.Builder.configureHeaders() = set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36")
+
+    override fun OkHttpClient.Builder.configureClient() = apply {
+        addInterceptor(GraphQLErrorInterceptor())
+        addInterceptor(ImageInterceptor())
+    }
+
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val result = client.graphQLGet(
+            apiUrl,
+            apiHeaders,
+            operationName = "cosmo_getBookRanking",
+            variables = PopularVariables("D_C_COMIC", page, 20),
+            extensions = persistedQueryExtension(POPULAR_QUERY_HASH),
+            cacheControl = FORCE_NETWORK,
+            fetch = Fetch.XHR,
+        ).parseGraphQLAs<PopularResponse>().bookRanking
         val mangas = result.books.map { it.bookSakuhin.toSManga() }
-        val hasNextPage = result.pageInfo.let { it.page * it.pageSize < it.results }
-        return MangasPage(mangas, hasNextPage)
+        return MangasPage(mangas, result.pageInfo.hasNextPage())
     }
 
-    override fun latestUpdatesRequest(page: Int): Request {
-        val payload = Payload(
-            "cosmo_getNewBooks",
-            LatestVariables("TAG0000014500", page, 20),
-            Payload.Extensions(
-                Payload.Extensions.PersistedQuery(1, LATEST_QUERY_HASH),
-            ),
-        )
-        return apiRequest(payload)
-    }
-
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        val result = response.parseAs<LatestResponse>().data.newBooks
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
+        val result = client.graphQLGet(
+            apiUrl,
+            apiHeaders,
+            operationName = "cosmo_getNewBooks",
+            variables = LatestVariables("TAG0000014500", page, 20),
+            extensions = persistedQueryExtension(LATEST_QUERY_HASH),
+            cacheControl = FORCE_NETWORK,
+            fetch = Fetch.XHR,
+        ).parseGraphQLAs<LatestResponse>().newBooks
         val mangas = result.books.map { it.toSManga() }
-        val hasNextPage = result.pageInfo.let { it.page * it.pageSize < it.results }
-        return MangasPage(mangas, hasNextPage)
+        return MangasPage(mangas, result.pageInfo.hasNextPage())
     }
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val payload = Payload(
-            "cosmo_bookFreewordSearch",
-            SearchVariables(query, page, 20, null, "RECOMMEND"),
-            Payload.Extensions(
-                Payload.Extensions.PersistedQuery(1, SEARCH_QUERY_HASH),
-            ),
-        )
-        return apiRequest(payload)
-    }
-
-    override fun searchMangaParse(response: Response): MangasPage {
-        val result = response.parseAs<SearchResponse>().data.search
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
+        val result = client.graphQLGet(
+            apiUrl,
+            apiHeaders,
+            operationName = "cosmo_bookFreewordSearch",
+            variables = SearchVariables(query, page, 20, null, "RECOMMEND"),
+            extensions = persistedQueryExtension(SEARCH_QUERY_HASH),
+            cacheControl = FORCE_NETWORK,
+            fetch = Fetch.XHR,
+        ).parseGraphQLAs<SearchResponse>().search
         val mangas = result.books.map { it.toSManga() }
-        val hasNextPage = result.pageInfo.let { it.page * it.pageSize < it.results }
-        return MangasPage(mangas, hasNextPage)
+        return MangasPage(mangas, result.pageInfo.hasNextPage())
     }
 
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        val bookSakuhinCode = (baseUrl + manga.url).toHttpUrl().pathSegments.last()
-        val payload = Payload(
-            "cosmo_bookTitleDetail",
-            DetailsVariables(bookSakuhinCode, "TOTAL", 2, 5),
-            Payload.Extensions(
-                Payload.Extensions.PersistedQuery(1, DETAILS_QUERY_HASH),
-            ),
+    override fun getMangaUrl(manga: SManga): String = "$baseUrl/book/title/${manga.url}"
+
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate = coroutineScope {
+        val sakuhinCode = manga.url.substringAfter("/book/title/") // for old url compatibility
+        val hideLocked = preferences.getBoolean(HIDE_LOCKED_PREF_KEY, false)
+
+        val details = async {
+            if (!fetchDetails) return@async manga
+            client.graphQLGet(
+                apiUrl,
+                apiHeaders,
+                operationName = "cosmo_bookTitleDetail",
+                variables = DetailsVariables(sakuhinCode, "TOTAL", 2, 5),
+                extensions = persistedQueryExtension(DETAILS_QUERY_HASH),
+                cacheControl = FORCE_NETWORK,
+                fetch = Fetch.XHR,
+            ).parseGraphQLAs<DetailsResponse>().bookTitle.toSManga()
+        }
+
+        val chapterList = async {
+            if (!fetchChapters) return@async chapters
+            client.graphQLGet(
+                apiUrl,
+                apiHeaders,
+                operationName = "cosmo_bookTitleBooks",
+                variables = ChapterListVariables(sakuhinCode, 1, 9999),
+                extensions = persistedQueryExtension(CHAPTER_LIST_QUERY_HASH),
+                cacheControl = FORCE_NETWORK,
+                fetch = Fetch.XHR,
+            ).parseGraphQLAs<ChapterListResponse>().bookTitleBooks.books
+                .filter { !hideLocked || !it.isLocked }
+                .map { it.toSChapter(sakuhinCode) }
+                .reversed()
+        }
+
+        SMangaUpdate(
+            details.await(),
+            chapterList.await(),
         )
-        return apiRequest(payload)
     }
 
-    override fun mangaDetailsParse(response: Response): SManga = response.parseAs<DetailsResponse>().data.bookTitle.toSManga()
+    override fun getChapterUrl(chapter: SChapter): String = "$baseUrl/book/view/${chapter.memo["sakuhinCode"]!!.string}/${chapter.url}"
 
-    override fun chapterListRequest(manga: SManga): Request {
-        val bookSakuhinCode = (baseUrl + manga.url).toHttpUrl().pathSegments.last()
-        val payload = Payload(
-            "cosmo_bookTitleBooks",
-            ChapterListVariables(bookSakuhinCode, 1, 9999),
-            Payload.Extensions(
-                Payload.Extensions.PersistedQuery(1, CHAPTER_LIST_QUERY_HASH),
-            ),
-        )
-        return apiRequest(payload)
-    }
+    override suspend fun getPageList(chapter: SChapter): List<Page> = coroutineScope {
+        val bookFileCode = chapter.memo["bookFileCode"]?.string
+            ?: throw Exception("This product is not available yet.")
 
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val variables = response.request.url.queryParameter("variables")!!
-        val sakuhinCode = variables.parseAs<ChapterListVariables>().bookSakuhinCode
-        val data = response.parseAs<ChapterListResponse>().data.bookTitleBooks.books
-        val hidePaid = preferences.getBoolean(HIDE_PAID_PREF, false)
-        return data
-            .filterNot { hidePaid && it.isFree != true && it.isPurchased != true && it.rightsExpirationDatetime == null }
-            .map { it.toSChapter(sakuhinCode) }
-            .reversed()
-    }
-
-    override fun getMangaUrl(manga: SManga): String = baseUrl + manga.url
-
-    override fun getChapterUrl(chapter: SChapter): String = baseUrl + chapter.url
-
-    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> = Observable.fromCallable {
-        val bookFileCode = (baseUrl + chapter.url).toHttpUrl().fragment
-
-        val payload = Payload(
-            "cosmo_getBookPlaylistUrl",
-            PageListVariables(bookFileCode!!),
-            Payload.Extensions(
-                Payload.Extensions.PersistedQuery(1, PLAYLIST_QUERY_HASH),
-            ),
-        )
-
-        val apiRequest = apiRequest(payload)
-        val playlistData = client.newCall(apiRequest).execute()
-        val playlistParse = playlistData.parseAs<PlaylistResponse>().data?.playlistUrl
-            ?: throw Exception("This chapter is locked. Log in via WebView and rent or purchase this chapter to read.")
-
-        var keys: Map<String, String>? = null
-
-        // Try multiple times to load all signed cookies
-        for (i in 1..4) {
+        val userId = async {
             try {
-                val viewerUrl = getChapterUrl(chapter)
-                keys = fetchKeys(viewerUrl)
-
-                if (keys != null) break
-            } catch (e: Exception) {
-                if (i == 4) throw e
-                Thread.sleep(2000)
+                client.graphQLGet(
+                    apiUrl,
+                    apiHeaders,
+                    operationName = "cosmo_getCacheBusterUserId",
+                    extensions = persistedQueryExtension(USER_ID_QUERY_HASH),
+                    fetch = Fetch.XHR,
+                ).parseGraphQLAs<UserResponse>().unextUser.id
+            } catch (_: GraphQLException) {
+                ""
             }
         }
 
-        if (keys == null) {
-            throw Exception("Failed to fetch DRM keys. Try again.")
-        }
+        val playlistResult = client.graphQLGet(
+            apiUrl,
+            apiHeaders,
+            operationName = "cosmo_getBookPlaylistUrl",
+            variables = PageListVariables(bookFileCode),
+            extensions = persistedQueryExtension(PLAYLIST_QUERY_HASH),
+            cacheControl = FORCE_NETWORK,
+            fetch = Fetch.XHR,
+        ).parseAs<PlaylistResponse>()
 
-        val base = playlistParse.playlistBaseUrl
-        val ubookPath = playlistParse.playlistUrl.ubooks.first().content
-        val zipUrl = "$base/$ubookPath".toHttpUrl().newBuilder().build().toString()
+        val playlist = playlistResult.playlist ?: throw Exception(
+            when (playlistResult.errorCode) {
+                "BKE0004103" -> "This product can only be read in the U-NEXT app."
+                "BKE0000467" -> "This service can only be used from Japan."
+                else -> "Log in via WebView and rent or purchase this product to read."
+            },
+        )
 
-        val headRequest = Request.Builder().url(zipUrl).headers(headers).head().build()
-        val contentLength = client.newCall(headRequest).execute().use {
-            it.header("Content-Length")?.toBigInteger()
-        } ?: throw Exception("Could not get Content-Length")
+        val contentKeys = async { getContentKeys(playlist, bookFileCode, userId.await()) }
 
-        val zipHandler = ZipHandler(zipUrl, client, headers, "zip", contentLength)
-        val zip = zipHandler.populate()
+        val zipUrl = playlist.zipUrl
+        val entries = client.zipDirectory(zipUrl).entries.associateBy(Entry::name)
+        val index = async { client.readZipEntry(zipUrl, entries.getValue("index.json")).buffer().parseAs<UBookIndex>() }
+        val drm = async { client.readZipEntry(zipUrl, entries.getValue("drm.json")).buffer().parseAs<UBookDrm>() }
 
-        val indexJson = zip.fetch("index.json", client).toString(Charsets.UTF_8).parseAs<UBookIndex>()
-        val drmJson = zip.fetch("drm.json", client).toString(Charsets.UTF_8).parseAs<UBookDrm>()
+        val encryptedFiles = drm.await().encryptedFileList
+        val keys = contentKeys.await()
+        val pages = index.await()
 
-        indexJson.spine.mapIndexed { i, spine ->
-            val pageInfo = indexJson.pages[spine.pageId]
-                ?: throw Exception("Page definition not found for ${spine.pageId}")
-
-            val entryName = pageInfo.image.src
-            val drmData = drmJson.encryptedFileList[entryName]
-                ?: throw Exception("DRM metadata not found for $entryName")
-
-            val key = keys[drmData.keyId] ?: throw Exception("Decryption key not found for ${drmData.keyId}")
-            val zipEntry = zip.getEntry(entryName) ?: throw Exception("Entry not found in CD: $entryName")
-
-            val requestData = ImageRequestData(
-                zipUrl,
-                zip.zipStartOffset,
-                zipEntry.localFileHeaderRelativeOffset.toLong(),
-                zipEntry.compressedSize,
-                key,
-                drmData.iv,
-                drmData.originalFileSize,
+        pages.spine.mapIndexed { i, spine ->
+            val name = pages.pages.getValue(spine.pageId).image.src
+            val file = encryptedFiles.getValue(name)
+            val entry = entries.getValue(name)
+            val data = ImageRequestData(
+                localHeaderOffset = entry.localHeaderOffset,
+                compressedSize = entry.compressedSize,
+                method = entry.method,
+                key = keys.getValue(file.keyId).toBase64(),
+                iv = file.iv,
+                originalFileSize = file.originalFileSize,
             )
 
-            val fragment = requestData.toJsonString()
-            Page(i, imageUrl = "http://127.0.0.1/#$fragment")
+            Page(i, imageUrl = "$zipUrl#${data.toJsonString()}")
         }
     }
 
-    override fun pageListRequest(chapter: SChapter): Request = throw UnsupportedOperationException()
-    override fun pageListParse(response: Response): List<Page> = throw UnsupportedOperationException()
+    private suspend fun getContentKeys(
+        playlist: Playlist,
+        bookFileCode: String,
+        userId: String,
+    ): Map<String, ByteArray> {
+        val challenge = ChallengeRequest(
+            version = 1,
+            playToken = playlist.playToken,
+            nonce = Random.nextBytes(16).toBase64(),
+            kek = keyPair.public.encoded.toBase64(),
+            profile = "ubook",
+        ).toJsonString().toByteArray().toBase64()
 
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun fetchKeys(url: String): Map<String, String>? {
-        // Request viewer URL to populate signed cookies
-        var html: String? = null
-        try {
-            val request = GET(url, headers, CacheControl.FORCE_NETWORK)
-            client.newCall(request).execute().use { response ->
-                html = response.body.string()
-            }
-        } catch (_: Exception) {
-        }
+        val signature = challenge.hmacSha256(SIGNING_KEY).toHexString()
 
-        val latch = CountDownLatch(1)
-        var result: String? = null
-
-        Handler(Looper.getMainLooper()).post {
-            val webView = WebView(Injekt.get<Application>())
-
-            with(webView.settings) {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                databaseEnabled = true
-                blockNetworkImage = true
-                userAgentString = headers["User-Agent"]
-            }
-
-            webView.webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView, url: String?) {
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        val script = UNext::class.java
-                            .getResourceAsStream("/assets/key-extractor.js")!!
-                            .bufferedReader()
-                            .use { it.readText() }
-
-                        view.evaluateJavascript(script, null)
-                    }, 3000)
-                }
-            }
-
-            webView.addJavascriptInterface(
-                object : Any() {
-                    @JavascriptInterface
-                    @Suppress("unused")
-                    fun passKeys(json: String) {
-                        result = json
-                        latch.countDown()
-                        Handler(Looper.getMainLooper()).post {
-                            webView.stopLoading()
-                            webView.destroy()
-                        }
-                    }
-                },
-                "android",
-            )
-
-            webView.loadDataWithBaseURL(url, html!!, "text/html", "UTF-8", null)
-        }
-
-        latch.await(60, TimeUnit.SECONDS)
-
-        return result?.parseAs<Map<String, String>>()
-    }
-
-    override fun imageUrlParse(response: Response): String = response.request.url.toString()
-
-    private inline fun <reified T> apiRequest(payload: Payload<T>): Request {
-        val url = apiUrl.toHttpUrl().newBuilder()
-            .addQueryParameter("operationName", payload.operationName)
-            .addQueryParameter("variables", payload.variables.toJsonString())
-            .addQueryParameter("extensions", payload.extensions.toJsonString())
+        val url = playlist.licenseUrl.toHttpUrl().newBuilder()
+            .addQueryParameter("play_token", playlist.playToken)
             .build()
 
-        val newHeaders = super.headersBuilder()
-            .set("Content-Type", "application/json")
-            .build()
+        val license = client.post(url, Fetch.XHR, LicenseRequest(challenge, signature).toJsonRequestBody()).parseAs<LicenseResponse>().license
+        val licenseKey = (userId + bookFileCode).sha256().copyOf(AES_KEY_SIZE)
 
-        return GET(url.toString(), newHeaders, CacheControl.FORCE_NETWORK)
+        val data = Base64.decode(license.data, Base64.DEFAULT)
+        val decrypt = aesCbc(licenseKey, Base64.decode(license.iv, Base64.DEFAULT))
+        val records = decrypt.doFinal(data, HEADER_SIZE, data.size - HEADER_SIZE - DIGEST_SIZE)
+        val unwrap = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding")
+        unwrap.init(Cipher.DECRYPT_MODE, keyPair.private, OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT))
+
+        val version = data.readIntLittleEndian(VERSION_OFFSET)
+        val stride = KEY_ID_SIZE + WRAPPED_KEY_SIZE + if (version == 0) 0 else KEY_VALIDITY_SIZE
+        var offset = if (version == 0) LICENSE_VALIDITY_SIZE else 0
+
+        return buildMap {
+            repeat(data.readIntLittleEndian(KEY_COUNT_OFFSET)) {
+                val keyId = String(records, offset, KEY_ID_SIZE, Charsets.US_ASCII).trimEnd('\u0000')
+                put(keyId, unwrap.doFinal(records, offset + KEY_ID_SIZE, WRAPPED_KEY_SIZE))
+                offset += stride
+            }
+        }
     }
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         SwitchPreferenceCompat(screen.context).apply {
-            key = HIDE_PAID_PREF
-            title = "Hide paid chapters"
-            setDefaultValue(true)
+            key = HIDE_LOCKED_PREF_KEY
+            title = "Hide Locked Chapters"
+            setDefaultValue(false)
         }.also(screen::addPreference)
     }
 
     companion object {
-        private const val HIDE_PAID_PREF = "HIDE_PAID"
+        private const val HIDE_LOCKED_PREF_KEY = "HIDE_PAID"
 
         // Monitor network requests to get hashes.
         // https://video.unext.jp/book/categoryranking/D_C_COMIC?genre=freecomic
@@ -361,5 +299,22 @@ class UNext :
         // https://video.unext.jp/book/view/BSD0000820098/BID0001508570
         // https://cc.unext.jp/?operationName=cosmo_getBookPlaylistUrl&variables={"bookFileCode":"BFC0002699405"}&extensions={"persistedQuery":{"version":1,"sha256Hash":"f8a851c14ec61eb42dff966570b2ad49f86eeec7f39d2d32ab0ec58cad268fc1"}}
         private const val PLAYLIST_QUERY_HASH = "f8a851c14ec61eb42dff966570b2ad49f86eeec7f39d2d32ab0ec58cad268fc1"
+
+        // https://cc.unext.jp/?operationName=cosmo_getCacheBusterUserId&extensions={"persistedQuery":{"version":1,"sha256Hash":"cadd8a9d8e909793bd96aa71cde95c0d3fb9b2dd0e78f91b1cf625d00f5b3553"}}
+        private const val USER_ID_QUERY_HASH = "cadd8a9d8e909793bd96aa71cde95c0d3fb9b2dd0e78f91b1cf625d00f5b3553"
+
+        private const val HEADER_SIZE = 16
+        private const val VERSION_OFFSET = 8
+        private const val KEY_COUNT_OFFSET = 12
+        private const val DIGEST_SIZE = 65
+        private const val LICENSE_VALIDITY_SIZE = 24
+        private const val KEY_VALIDITY_SIZE = 16
+        private const val KEY_ID_SIZE = 25
+        private const val WRAPPED_KEY_SIZE = 256
+        private const val AES_KEY_SIZE = 16
+
+        private val SIGNING_KEY = "0f4b69c8094fb3ea927058ea17c061b74e5ff7c8b67f055793ce9e2e0d211352".decodeHex()
     }
 }
+
+private fun ByteArray.toBase64() = Base64.encodeToString(this, Base64.NO_WRAP)

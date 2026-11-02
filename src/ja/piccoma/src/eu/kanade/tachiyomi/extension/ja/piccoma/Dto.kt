@@ -1,7 +1,11 @@
 package eu.kanade.tachiyomi.extension.ja.piccoma
 
+import eu.kanade.tachiyomi.source.model.SManga
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import okhttp3.HttpUrl.Companion.toHttpUrl
+
+fun String.toCoverUrl(): String = toHttpUrl().newBuilder().setPathSegment(4, "cover_x3").toString()
 
 @Serializable
 class SearchResponseDto(
@@ -16,10 +20,18 @@ class SearchDataDto(
 
 @Serializable
 class SearchProductDto(
-    val id: Int,
-    val title: String,
-    val img: String,
-)
+    private val id: Int,
+    private val title: String,
+    private val img: String?,
+    @SerialName("is_audio") val isAudio: Int?,
+    @SerialName("is_anime") val isAnime: Int?,
+) {
+    fun toSManga() = SManga.create().apply {
+        url = id.toString()
+        title = this@SearchProductDto.title
+        thumbnail_url = "https:$img".toCoverUrl()
+    }
+}
 
 @Serializable
 class PDataDto(

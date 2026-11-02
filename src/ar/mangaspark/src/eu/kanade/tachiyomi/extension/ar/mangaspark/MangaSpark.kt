@@ -1,17 +1,13 @@
 package eu.kanade.tachiyomi.extension.ar.mangaspark
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
-import java.text.SimpleDateFormat
+import keiyoushi.annotation.Source
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class MangaSpark :
-    Madara(
-        "MangaSpark",
-        "https://manga-spark.net",
-        "ar",
-        dateFormat = SimpleDateFormat("d MMMM، yyyy", Locale("ar")),
-    ) {
-    override val chapterUrlSuffix = ""
-    override val useLoadMoreRequest = LoadMoreStrategy.Always
-    override val useNewChapterEndpoint = false
+@Source
+abstract class MangaSpark : Madara() {
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("d MMMM، yyyy", Locale.forLanguageTag("ar"))
+    override val chapterMode = ChapterMode.AdminAjax
+    override val pageListParseSelector = "div.wp-manga-chapter-img img, div.reading-content img"
 }

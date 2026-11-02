@@ -2,46 +2,50 @@ package eu.kanade.tachiyomi.extension.zh.boylove
 
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import keiyoushi.utils.tryParse
+import keiyoushi.utils.tryParseDateTime
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.long
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.Locale
+
+private val dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.ROOT).withZone(ZoneOffset.UTC)
 
 @Serializable
 class MangaDto(
     val id: Int,
     private val title: String,
-    private val update_time: JsonPrimitive? = null,
+    @SerialName("update_time") private val updateTime: JsonPrimitive? = null,
     private val image: String,
-    private val auther: String,
-    private val desc: String?,
-    private val mhstatus: Int,
+    @SerialName("auther") private val authorName: String,
+    private val desc: String? = null,
+    @SerialName("mhstatus") private val mhStatus: Int,
     private val keyword: String,
 ) {
     fun toSManga() = SManga.create().apply {
         url = id.toString()
         title = this@MangaDto.title
-        author = auther
+        author = authorName
         genre = keyword.replace(",", ", ")
-        status = when (mhstatus) {
+        status = when (mhStatus) {
             0 -> SManga.ONGOING
             1 -> SManga.COMPLETED
             else -> SManga.UNKNOWN
         }
         thumbnail_url = image.toImageUrl()
-        val rawUpdateTime = update_time
+        val rawUpdateTime = updateTime
         if (rawUpdateTime == null) {
             description = desc?.trim()
             return@apply
         }
-        val updateTime = when {
+        val timeStr = when {
             rawUpdateTime.isString -> rawUpdateTime.content
-            else -> dateFormat.format(Date(rawUpdateTime.long * 1000))
+            else -> dateFormat.format(Instant.ofEpochSecond(rawUpdateTime.long))
         }
-        description = "更新时间：$updateTime\n\n${desc?.trim()}"
+        description = "更新时间：$timeStr\n\n${desc?.trim()}"
         initialized = true
     }
 }
@@ -56,16 +60,14 @@ fun String.toImageUrl() = if (startsWith("http")) {
 class ChapterDto(
     private val id: Int,
     private val title: String,
-    private val create_time: String,
+    @SerialName("create_time") private val createTime: String,
 ) {
     fun toSChapter() = SChapter.create().apply {
         url = "/home/book/capter/id/$id"
         name = title.trim()
-        date_upload = dateFormat.tryParse(create_time)
+        date_upload = dateFormat.tryParseDateTime(createTime)
     }
 }
-
-private val dateFormat by lazy { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ENGLISH) }
 
 @Serializable
 class ListPageDto<T>(val lastPage: Boolean, val list: List<T> = emptyList())

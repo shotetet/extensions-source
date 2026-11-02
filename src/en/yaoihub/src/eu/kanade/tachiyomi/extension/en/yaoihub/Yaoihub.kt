@@ -1,15 +1,15 @@
 package eu.kanade.tachiyomi.extension.en.yaoihub
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.annotation.Source
+import keiyoushi.network.rateLimit
 import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.seconds
 
-class Yaoihub : Madara("Yaoihub", "https://yaoihub.net", "en") {
+@Source
+abstract class Yaoihub : Madara() {
 
-    override val client: OkHttpClient = super.client.newBuilder()
-        .rateLimit(1, 2, TimeUnit.SECONDS)
-        .build()
+    override fun OkHttpClient.Builder.configureClient() = rateLimit(1, 2.seconds) { !it.encodedPath.startsWith("/wp-content/uploads/") }
 
-    override val useNewChapterEndpoint = true
+    override val chapterMode = ChapterMode.MangaAjax
 }

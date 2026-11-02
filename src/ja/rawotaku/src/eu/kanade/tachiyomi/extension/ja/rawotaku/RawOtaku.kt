@@ -1,24 +1,18 @@
 package eu.kanade.tachiyomi.extension.ja.rawotaku
 
 import eu.kanade.tachiyomi.multisrc.mangareader.MangaReader
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
+import keiyoushi.annotation.Source
+import keiyoushi.network.rateLimit
+import kotlinx.serialization.json.JsonElement
 import okhttp3.HttpUrl
+import okhttp3.OkHttpClient
 
-class RawOtaku :
-    MangaReader(
-        "Raw Otaku",
-        "https://rawotaku.com",
-        "ja",
-    ) {
+@Source
+abstract class RawOtaku : MangaReader() {
 
-    override val client = super.client.newBuilder()
-        .rateLimit(2)
-        .build()
-
-    override fun headersBuilder() = super.headersBuilder()
-        .add("Referer", "$baseUrl/")
+    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = rateLimit(2)
 
     override fun addPage(page: Int, builder: HttpUrl.Builder) {
         builder.addQueryParameter("p", page.toString())
@@ -39,7 +33,7 @@ class RawOtaku :
 
     // =============================== Filters ==============================
 
-    override fun getFilterList() = FilterList(
+    override fun getFilterList(data: JsonElement?) = FilterList(
         Note,
         Filter.Separator(),
         TypeFilter(),

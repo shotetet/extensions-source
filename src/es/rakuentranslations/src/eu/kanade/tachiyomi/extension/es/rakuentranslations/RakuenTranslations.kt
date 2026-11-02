@@ -1,10 +1,7 @@
 package eu.kanade.tachiyomi.extension.es.rakuentranslations
 
-import eu.kanade.tachiyomi.multisrc.lectormoe.LectorMoe
+import eu.kanade.tachiyomi.multisrc.mangathemesia.MangaThemesia
+import keiyoushi.annotation.Source
 
-class RakuenTranslations :
-    LectorMoe(
-        "Rakuen Translations",
-        "https://capibaratraductor.com/rakuen",
-        "es",
-    )
+@Source
+abstract class RakuenTranslations : MangaThemesia()

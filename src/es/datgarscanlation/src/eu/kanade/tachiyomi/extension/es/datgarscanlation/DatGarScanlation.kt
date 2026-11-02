@@ -1,19 +1,16 @@
 package eu.kanade.tachiyomi.extension.es.datgarscanlation
 
 import eu.kanade.tachiyomi.multisrc.zeistmanga.ZeistManga
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.annotation.Source
+import keiyoushi.network.rateLimit
+import okhttp3.OkHttpClient
 
-class DatGarScanlation :
-    ZeistManga(
-        "Dat-Gar Scan",
-        "https://datgarscanlation.blogspot.com",
-        "es",
-    ) {
+@Source
+abstract class DatGarScanlation : ZeistManga() {
+
+    override val supportsLatest = false
+
+    override fun OkHttpClient.Builder.configureClient() = rateLimit(2)
+
     override val useNewChapterFeed = true
-    override val hasFilters = true
-    override val hasLanguageFilter = false
-
-    override val client = super.client.newBuilder()
-        .rateLimit(2)
-        .build()
 }

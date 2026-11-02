@@ -1,13 +1,11 @@
 package eu.kanade.tachiyomi.extension.tr.mangawow
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
-import java.text.SimpleDateFormat
+import keiyoushi.annotation.Source
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class MangaWOW :
-    Madara(
-        "MangaWOW",
-        "https://mangawow.org",
-        "tr",
-        SimpleDateFormat("MMMM dd, yyyy", Locale("tr")),
-    )
+@Source
+abstract class MangaWOW : Madara() {
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("dd MMMM yyyy", Locale.forLanguageTag("tr"))
+}

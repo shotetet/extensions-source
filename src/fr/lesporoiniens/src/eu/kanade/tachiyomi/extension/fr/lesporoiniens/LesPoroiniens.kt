@@ -1,85 +1,162 @@
 package eu.kanade.tachiyomi.extension.fr.lesporoiniens
 
-import eu.kanade.tachiyomi.multisrc.scanr.ConfigResponse
-import eu.kanade.tachiyomi.multisrc.scanr.PageData
-import eu.kanade.tachiyomi.multisrc.scanr.ScanR
-import eu.kanade.tachiyomi.multisrc.scanr.SeriesData
-import eu.kanade.tachiyomi.multisrc.scanr.toSManga
-import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.util.asJsoup
-import keiyoushi.utils.jsonInstance
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.asJsoup
 import keiyoushi.utils.parseAs
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
-import org.jsoup.Jsoup
+import kotlin.coroutines.cancellation.CancellationException
 
-class LesPoroiniens :
-    ScanR(
-        name = "Les Poroiniens",
-        baseUrl = "https://lesporoiniens.org",
-        lang = "fr",
-    ) {
+@Source
+abstract class LesPoroiniens : KeiSource() {
 
-    override val client: OkHttpClient = super.client.newBuilder()
-        .addInterceptor { chain ->
-            val response = chain.proceed(chain.request())
-            if (response.code == 403 && response.request.url.encodedPath.startsWith("/data/series/")) {
-                val bodyString = response.peekBody(1024 * 1024).string()
-                if (bodyString.contains("Accès refusé", true) || bodyString.contains("Erreur 404", true)) {
-                    response.close()
-                    return@addInterceptor response.newBuilder()
-                        .code(404)
-                        .message("Not Found")
-                        .build()
-                }
-            }
-            response
-        }
-        .build()
-
-    override fun searchMangaParse(response: Response): MangasPage {
-        val config = response.parseAs<ConfigResponse>()
-        val mangaList = mutableListOf<SManga>()
-        val searchQuery = response.request.url.fragment ?: ""
-
-        for (fileName in config.localSeriesFiles) {
-            try {
-                val seriesResponse = client.newCall(
-                    GET("$baseUrl/data/series/$fileName", headers),
-                ).execute()
-                if (!seriesResponse.isSuccessful) {
-                    seriesResponse.close()
-                    continue
-                }
-                val seriesData = transformChaptersJson(seriesResponse.body.string())
-                    .parseAs<SeriesData>()
-
-                if (searchQuery.isBlank() || seriesData.title.contains(searchQuery, ignoreCase = true)) {
-                    mangaList.add(seriesData.toSManga(slugSeparator = "-"))
-                }
-            } catch (_: Exception) {
-                continue
-            }
-        }
-
-        return MangasPage(mangaList, false)
+    companion object {
+        private const val SERIES_DATA_SELECTOR = "#series-data-placeholder"
+        private const val READER_DATA_SELECTOR = "#reader-data-placeholder"
     }
 
-    override fun mangaDetailsParse(response: Response): SManga = super.mangaDetailsParse(transformSeriesDataResponse(response))
+    override val supportsLatest = false
 
-    override fun chapterListParse(response: Response): List<SChapter> = super.chapterListParse(transformSeriesDataResponse(response))
+    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = addInterceptor { chain ->
+        val response = chain.proceed(chain.request())
+        if (response.code == 403 && response.request.url.encodedPath.startsWith("/data/series/")) {
+            val bodyString = response.peekBody(16 * 1024).string()
+            if (bodyString.contains("Accès refusé", true) || bodyString.contains("Erreur 404", true)) {
+                response.close()
+                return@addInterceptor response.newBuilder()
+                    .code(404)
+                    .message("Not Found")
+                    .build()
+            }
+        }
+        response
+    }
 
-    override fun pageListParse(response: Response): List<Page> {
-        val document = response.asJsoup()
-        val chapterNumber = response.request.url.pathSegments.last { it.isNotEmpty() }
-        val jsonData = document.selectFirst("#reader-data-placeholder")!!.html()
+    override suspend fun getPopularManga(page: Int): MangasPage = fetchCatalogue().toMangasPage()
+
+    override suspend fun getLatestUpdates(page: Int): MangasPage = throw UnsupportedOperationException()
+
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
+        val trimmedQuery = query.trim()
+        if (trimmedQuery.isBlank()) return getPopularManga(page)
+        if (page > 1) return MangasPage(emptyList(), false)
+        return catalogueSearch(trimmedQuery)
+    }
+
+    override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
+        if (url.host != baseUrl.toHttpUrl().host) return null
+        val direct = try {
+            val document = client.get(url, Fetch.DOCUMENT).asJsoup()
+            document.selectFirst(SERIES_DATA_SELECTOR)?.html()?.parseAs<SeriesData>()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        if (direct != null) return direct.toDetailedSManga()
+        val slug = url.pathSegments.firstOrNull { it.isNotEmpty() } ?: return null
+        val wanted = slugAlphanumeric(slug)
+        val match = fetchCatalogue().firstOrNull {
+            slugAlphanumeric(toSlug(it.title)) == wanted
+        } ?: return null
+        return match.toDetailedSManga()
+    }
+
+    private fun slugAlphanumeric(slug: String): String = slug.lowercase().filter { it.isLetterOrDigit() }
+
+    private fun List<SeriesData>.toMangasPage(): MangasPage = MangasPage(map { it.toSManga() }, false)
+
+    private suspend fun catalogueSearch(query: String): MangasPage {
+        val matches = fetchCatalogue().filter {
+            it.title.contains(query, ignoreCase = true) ||
+                it.author?.contains(query, ignoreCase = true) == true ||
+                it.artist?.contains(query, ignoreCase = true) == true ||
+                it.alternativeTitles?.any { title -> title.contains(query, ignoreCase = true) } == true
+        }
+        return matches.toMangasPage()
+    }
+
+    private suspend fun fetchCatalogue(): List<SeriesData> {
+        val config = client.get("$baseUrl/data/config.json", Fetch.XHR).parseAs<ConfigResponse>()
+        return fetchSeriesFiles(config.localSeriesFiles)
+    }
+
+    private suspend fun fetchSeriesFiles(fileNames: List<String>): List<SeriesData> = coroutineScope {
+        fileNames.map { fileName ->
+            async {
+                try {
+                    client.get("$baseUrl/data/series/$fileName", Fetch.XHR).parseAs<SeriesData>()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+            }
+        }.awaitAll().filterNotNull()
+    }
+
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val document = client.get(getMangaUrl(manga), Fetch.DOCUMENT).asJsoup()
+        val seriesData = document.selectFirst(SERIES_DATA_SELECTOR)!!.html().parseAs<SeriesData>()
+        return SMangaUpdate(seriesData.toDetailedSManga(), buildChapterList(seriesData))
+    }
+
+    private fun buildChapterList(seriesData: SeriesData): List<SChapter> {
+        val chapters = seriesData.chapters ?: return emptyList()
+        val chapterList = mutableListOf<SChapter>()
+        val multipleChapters = chapters.size > 1
+        val mangaUrl = seriesData.mangaUrl
+
+        for ((chapterNumber, chapterData) in chapters) {
+            if (chapterData.licencied) continue
+
+            val title = chapterData.title ?: ""
+            val volumeNumber = chapterData.volume ?: ""
+
+            val baseName = if (multipleChapters) {
+                buildString {
+                    if (volumeNumber.isNotBlank()) append("Vol. $volumeNumber ")
+                    append("Ch. $chapterNumber")
+                    if (title.isNotBlank()) append(" – $title")
+                }
+            } else {
+                if (title.isNotBlank()) "One Shot – $title" else "One Shot"
+            }
+
+            val chapter = SChapter.create().apply {
+                name = baseName
+                url = "$mangaUrl/$chapterNumber"
+                chapter_number = chapterNumber.toFloatOrNull() ?: -1f
+                date_upload = chapterData.lastUpdated * 1000L
+            }
+            chapterList.add(chapter)
+        }
+
+        return chapterList.sortedByDescending { it.chapter_number }
+    }
+
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val document = client.get(getChapterUrl(chapter), Fetch.DOCUMENT).asJsoup()
+        val chapterNumber = chapter.url.trimEnd('/').substringAfterLast('/')
+        val jsonData = document.selectFirst(READER_DATA_SELECTOR)!!.html()
 
         val readerData = jsonData.parseAs<LocalReaderData>()
         val chapterData = readerData.series.chapters?.get(chapterNumber)
@@ -88,65 +165,15 @@ class LesPoroiniens :
         val chapterUrl = chapterData.groups?.values?.firstOrNull()
             ?: throw NoSuchElementException("Chapter URL not found for chapter $chapterNumber")
 
-        if (chapterUrl.contains("imgchest")) {
+        val imageUrls = if (chapterUrl.contains("imgchest")) {
             val chapterId = chapterUrl.substringAfterLast("/")
-            val pagesResponse = client.newCall(
-                GET("$baseUrl/api/imgchest-chapter-pages?id=$chapterId", headers),
-            ).execute()
-            val pages = pagesResponse.parseAs<List<PageData>>()
-            return pages.mapIndexed { index, pageData ->
-                Page(index, imageUrl = pageData.link)
-            }
+            client.get("$baseUrl/api/imgchest-chapter-pages?id=$chapterId", Fetch.XHR).parseAs<List<PageData>>()
+                .map { it.link }
         } else {
-            val pagesResponse = client.newCall(GET("$baseUrl$chapterUrl", headers)).execute()
-            val images = pagesResponse.parseAs<List<String>>()
-            return images.mapIndexed { index, imageUrl ->
-                Page(index, imageUrl = imageUrl)
-            }
+            client.get("$baseUrl$chapterUrl", Fetch.XHR).parseAs<List<String>>()
         }
-    }
-
-    private fun transformSeriesDataResponse(response: Response): Response {
-        val contentType = response.body.contentType()
-        val body = response.body.string()
-        val document = Jsoup.parse(body, response.request.url.toString())
-        val element = document.selectFirst("#series-data-placeholder")
-
-        if (element != null) {
-            val original = element.html()
-            val transformed = transformChaptersJson(original)
-            if (transformed != original) {
-                element.html(transformed)
-                return response.newBuilder()
-                    .body(document.outerHtml().toResponseBody(contentType))
-                    .build()
-            }
+        return imageUrls.mapIndexed { index, imageUrl ->
+            Page(index, imageUrl = imageUrl)
         }
-
-        return response.newBuilder()
-            .body(body.toResponseBody(contentType))
-            .build()
-    }
-
-    private fun transformChaptersJson(jsonString: String): String {
-        val element = try {
-            jsonInstance.parseToJsonElement(jsonString)
-        } catch (_: Exception) {
-            return jsonString
-        }
-
-        if (element is JsonObject && element["chapters"] is JsonArray) {
-            val chapters = element["chapters"] as JsonArray
-            val chaptersMap = JsonObject(
-                chapters.mapIndexed { index, item ->
-                    (index + 1).toString() to item
-                }.toMap(),
-            )
-            return JsonObject(
-                element.toMutableMap().also { it["chapters"] = chaptersMap },
-            ).toString()
-        }
-
-        return jsonString
     }
 }

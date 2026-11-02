@@ -1,13 +1,13 @@
 package eu.kanade.tachiyomi.extension.zh.jiuermanhua
 
 import eu.kanade.tachiyomi.multisrc.sinmh.SinMH
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.model.SChapter
-import org.jsoup.nodes.Document
+import keiyoushi.annotation.Source
 
-class JiuerManhua : SinMH("92漫画", "http://www.92mh.com") {
+@Source
+abstract class JiuerManhua : SinMH() {
 
-    override fun mangaDetailsParse(document: Document) = mangaDetailsParseDMZJStyle(document, hasBreadcrumb = false)
+    override val mobileUrl = "http://h5.92mh.com"
 
-    override fun pageListRequest(chapter: SChapter) = GET(baseUrl + chapter.url, headers)
+    override fun pageListUrl(chapter: SChapter) = baseUrl + chapter.url
 }

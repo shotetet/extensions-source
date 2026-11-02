@@ -1,10 +1,11 @@
 package eu.kanade.tachiyomi.extension.ar.manhatok
 
 import eu.kanade.tachiyomi.multisrc.zeistmanga.ZeistManga
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.annotation.Source
+import keiyoushi.network.rateLimit
+import okhttp3.OkHttpClient
 
-class Manhatok : ZeistManga("Manhatok", "https://manhatok.blogspot.com", "ar") {
-    override val client = super.client.newBuilder()
-        .rateLimit(2)
-        .build()
+@Source
+abstract class Manhatok : ZeistManga() {
+    override fun OkHttpClient.Builder.configureClient() = rateLimit(3)
 }

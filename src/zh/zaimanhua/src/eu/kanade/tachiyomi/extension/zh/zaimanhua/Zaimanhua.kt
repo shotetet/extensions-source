@@ -8,7 +8,6 @@ import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -16,13 +15,21 @@ import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.fetch
+import keiyoushi.network.get
+import keiyoushi.network.rateLimit
+import keiyoushi.source.KeiSource
 import keiyoushi.utils.firstInstanceOrNull
 import keiyoushi.utils.getPreferences
+import keiyoushi.utils.md5
 import keiyoushi.utils.parseAs
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import keiyoushi.utils.toJsonString
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.serialization.json.JsonElement
 import okhttp3.CacheControl
 import okhttp3.FormBody
 import okhttp3.Headers
@@ -33,38 +40,28 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.Response
-import rx.Observable
-import uy.kohesive.injekt.injectLazy
 import java.io.IOException
-import java.security.MessageDigest
-import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.seconds
 
-class Zaimanhua :
-    HttpSource(),
+@Source
+abstract class Zaimanhua :
+    KeiSource(),
     ConfigurableSource {
-    override val lang = "zh"
-    override val supportsLatest = true
 
-    override val name = "再漫画"
-    override val baseUrl = "https://manhua.zaimanhua.com"
     private val mobileBaseUrl = "https://m.zaimanhua.com"
     private val apiUrl = "https://v4api.zaimanhua.com/app/v1"
     private val accountApiUrl = "https://account-api.zaimanhua.com/v1"
-    private val pcApiUrl = "$baseUrl/api/v1/comic2"
-    private val pcDetailUrl = "$pcApiUrl/comic/detail"
-    private val tryLoginRegex = Regex("""$apiUrl|$pcApiUrl""")
+    private val pcApiUrl get() = "$baseUrl/api/v1/comic2"
+    private val pcDetailUrl get() = "$pcApiUrl/comic/detail"
+    private val tryLoginRegex get() = Regex("""$apiUrl|$pcApiUrl""")
     private val checkCanReadRegex = Regex("""$apiUrl/comic/chapter""")
-
-    private val json by injectLazy<Json>()
 
     private val preferences: SharedPreferences = getPreferences()
 
-    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
-        .rateLimit(5)
-        .addInterceptor(::authIntercept)
+    override fun OkHttpClient.Builder.configureClient() = addInterceptor(::authIntercept)
         .addInterceptor(::imageRetryInterceptor)
         .addInterceptor(CommentsInterceptor)
-        .build()
+        .rateLimit(5)
 
     private fun authIntercept(chain: Interceptor.Chain): Response {
         var request = chain.request()
@@ -76,7 +73,6 @@ class Zaimanhua :
 
         if (url.contains(tryLoginRegex) && request.header("authorization") == null && username.isNotBlank() && password.isNotBlank()) {
             token = getToken(username, password)
-            apiHeaders = apiHeaders.newBuilder().setToken(token).build()
             hasTriedLogin = true
             preferences.edit().apply {
                 if (token.isBlank()) {
@@ -102,7 +98,6 @@ class Zaimanhua :
 
         if (!isValid(token) && !hasTriedLogin) {
             token = getToken(username, password)
-            apiHeaders = apiHeaders.newBuilder().setToken(token).build()
             preferences.edit().apply {
                 if (token.isBlank()) {
                     putString(TOKEN_PREF, "")
@@ -129,13 +124,13 @@ class Zaimanhua :
         if (token.isNotBlank()) set("authorization", "Bearer $token")
     }
 
-    private var apiHeaders = headersBuilder().setToken(preferences.getString(TOKEN_PREF, "")!!).build()
+    private val apiHeaders get() = headers.newBuilder().setToken(preferences.getString(TOKEN_PREF, "")!!).build()
 
     private fun isValid(token: String): Boolean {
         if (token.isBlank()) return false
         val parts = token.split(".")
         if (parts.size != 3) throw Exception("token格式错误，不符合JWT规范")
-        val payload = Base64.decode(parts[1], Base64.DEFAULT).toString(Charsets.UTF_8).parseAs<JwtPayload>()
+        val payload = Base64.decode(parts[1], Base64.URL_SAFE or Base64.NO_WRAP).toString(Charsets.UTF_8).parseAs<JwtPayload>()
         if (payload.expirationTime * 1000 < System.currentTimeMillis()) return false
 
         val response = client.newCall(
@@ -143,7 +138,7 @@ class Zaimanhua :
                 "$accountApiUrl/userInfo/get",
                 headersBuilder().setToken(token).build(),
                 cache = USE_CACHE,
-            ),
+            ).newBuilder().fetch(Fetch.XHR).build(),
         ).execute().parseAs<SimpleResponseDto>()
         return response.errno == 0
     }
@@ -151,8 +146,7 @@ class Zaimanhua :
     private fun getToken(username: String, password: String): String {
         if (username.isBlank() || password.isBlank()) return ""
         val passwordEncoded =
-            MessageDigest.getInstance("MD5").digest(password.toByteArray(Charsets.UTF_8))
-                .joinToString("") { "%02x".format(it) }
+            password.md5().toHexString()
         val formBody: RequestBody = FormBody.Builder().addEncoded("username", username)
             .addEncoded("passwd", passwordEncoded).build()
         val response = client.newCall(
@@ -160,48 +154,50 @@ class Zaimanhua :
                 "$accountApiUrl/login/passwd",
                 headers,
                 formBody,
-            ),
+            ).newBuilder().fetch(Fetch.XHR).build(),
         ).execute().parseAs<ResponseDto<UserDto>>()
         return response.data.user?.token ?: ""
+    }
+
+    private val pcHeaders get() = apiHeaders.newBuilder().set("Platform", "pc").build()
+
+    private fun <T> ResponseDto<DataWrapperDto<T>>.unwrap(): T {
+        if (errmsg.isNotBlank()) throw Exception(errmsg)
+        return data.data!!
     }
 
     // Detail
     override fun getMangaUrl(manga: SManga): String = "$mobileBaseUrl/pages/comic/detail?id=${manga.url}"
 
     // path: "/comic/detail/mangaId"
-    private fun getMangaUrl(id: String): HttpUrl = "$apiUrl/comic/detail/$id?_v=2.2.5#$id".toHttpUrl()
-    override fun mangaDetailsRequest(manga: SManga): Request = GET(getMangaUrl(manga.url), apiHeaders)
+    private fun getMangaUrl(id: String): HttpUrl = "$apiUrl/comic/detail/$id?_v=2.2.5".toHttpUrl()
 
-    override fun mangaDetailsParse(response: Response): SManga {
-        val result = response.parseAs<ResponseDto<DataWrapperDto<MangaDto>>>()
-        if (result.errmsg.isNotBlank()) {
-            throw Exception(result.errmsg)
-        } else {
-            return result.data.data!!.toSManga()
-        }
-    }
+    private suspend fun fetchMangaDetails(id: String): SManga = client.get(getMangaUrl(id), apiHeaders, Fetch.XHR)
+        .parseAs<ResponseDto<DataWrapperDto<MangaDto>>>().unwrap().toSManga()
 
     // Chapter
-    override fun chapterListRequest(manga: SManga): Request = GET(getMangaUrl(manga.url), apiHeaders.newBuilder().apply { set("Platform", "pc") }.build())
-
-    private fun pcChapterListRequest(mangaId: String): Request = GET("$pcDetailUrl?id=$mangaId", apiHeaders.newBuilder().apply { set("Platform", "pc") }.build())
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val result = response.parseAs<ResponseDto<DataWrapperDto<ChapterDataDto>>>()
-        if (result.errmsg.isNotBlank()) {
-            throw Exception(result.errmsg)
-        } else {
-            val data = result.data.data!!
-            if (response.request.url.toString().startsWith(apiUrl) && data.isHideChapter == 1 && data.canRead == true) {
-                val mangaId = response.request.url.fragment!!
-                response.close()
-                return chapterListParse(client.newCall(pcChapterListRequest(mangaId)).execute())
-            }
-            if (data.chapterList.isNullOrEmpty()) {
-                throw Exception("章节列表为空，用户权限不足或漫画不存在")
-            }
-            return data.parseChapterList()
+    private suspend fun fetchChapterList(mangaId: String): List<SChapter> {
+        var data = client.get(getMangaUrl(mangaId), pcHeaders, Fetch.XHR)
+            .parseAs<ResponseDto<DataWrapperDto<ChapterDataDto>>>().unwrap()
+        if (data.isHideChapter == 1 && data.canRead == true) {
+            data = client.get("$pcDetailUrl?id=$mangaId", pcHeaders, Fetch.XHR)
+                .parseAs<ResponseDto<DataWrapperDto<ChapterDataDto>>>().unwrap()
         }
+        if (data.chapterList.isNullOrEmpty()) {
+            throw Exception("章节列表为空，用户权限不足或漫画不存在")
+        }
+        return data.parseChapterList()
+    }
+
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate = coroutineScope {
+        val details = if (fetchDetails) async { fetchMangaDetails(manga.url) } else null
+        val chapterList = if (fetchChapters) async { fetchChapterList(manga.url) } else null
+        SMangaUpdate(details?.await() ?: manga, chapterList?.await() ?: chapters)
     }
 
     // PageList
@@ -211,32 +207,26 @@ class Zaimanhua :
     }
 
     // path: "/comic/chapter/mangaId/chapterId"
-    private fun pageListApiRequest(path: String): Request = GET("$apiUrl/comic/chapter/$path?_v=2.2.5", apiHeaders.newBuilder().apply { set("Platform", "h5") }.build(), USE_CACHE)
+    private fun pageListApiUrl(path: String) = "$apiUrl/comic/chapter/$path?_v=2.2.5"
 
-    override fun pageListParse(response: Response): List<Page> = throw UnsupportedOperationException()
+    private val h5Headers get() = apiHeaders.newBuilder().set("Platform", "h5").build()
 
-    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
-        val response = client.newCall(pageListApiRequest(chapter.url)).execute()
-        val result = response.parseAs<ResponseDto<DataWrapperDto<ChapterImagesDto>>>()
-        if (result.errmsg.isNotBlank()) {
-            throw Exception(result.errmsg)
-        } else {
-            if (!result.data.data!!.canRead) {
-                throw Exception("用户权限不足，请提升用户等级")
-            }
-            return Observable.fromCallable {
-                val images = result.data.data.images
-                val pageList = images.mapIndexedTo(ArrayList(images.size + 1)) { index, it ->
-                    val fragment = json.encodeToString(ImageRetryParamsDto(chapter.url, index))
-                    Page(index, imageUrl = "$it#$fragment")
-                }
-                if (preferences.getBoolean(COMMENTS_PREF, false)) {
-                    val (mangaId, chapterId) = chapter.url.split("/", limit = 2)
-                    pageList.add(Page(pageList.size, COMMENTS_FLAG, chapterCommentsUrl(mangaId, chapterId)))
-                }
-                pageList
-            }
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val data = client.get(pageListApiUrl(chapter.url), h5Headers, Fetch.XHR, USE_CACHE)
+            .parseAs<ResponseDto<DataWrapperDto<ChapterImagesDto>>>().unwrap()
+        if (!data.canRead) {
+            throw Exception("用户权限不足，请提升用户等级")
         }
+        val images = data.images
+        val pageList = images.mapIndexedTo(ArrayList(images.size + 1)) { index, it ->
+            val fragment = ImageRetryParamsDto(chapter.url, index).toJsonString()
+            Page(index, imageUrl = "$it#$fragment")
+        }
+        if (preferences.getBoolean(COMMENTS_PREF, false)) {
+            val (mangaId, chapterId) = chapter.url.split("/", limit = 2)
+            pageList.add(Page(pageList.size, COMMENTS_FLAG, chapterCommentsUrl(mangaId, chapterId)))
+        }
+        return pageList
     }
 
     private fun imageRetryInterceptor(chain: Interceptor.Chain): Response {
@@ -246,8 +236,8 @@ class Zaimanhua :
         if (response.isSuccessful || request.tag(String::class) != IMAGE_RETRY_FLAG || fragment == null) return response
         response.close()
 
-        val params = json.decodeFromString<ImageRetryParamsDto>(fragment)
-        val pageListResponse = client.newCall(pageListApiRequest(params.url)).execute()
+        val params = fragment.parseAs<ImageRetryParamsDto>()
+        val pageListResponse = client.newCall(GET(pageListApiUrl(params.url), h5Headers, USE_CACHE).newBuilder().fetch(Fetch.XHR).build()).execute()
         val result = pageListResponse.parseAs<ResponseDto<DataWrapperDto<ChapterImagesDto>>>()
         if (result.errmsg.isNotBlank()) {
             throw IOException(result.errmsg)
@@ -257,78 +247,79 @@ class Zaimanhua :
         }
     }
 
-    override fun imageRequest(page: Page): Request {
-        val flag = if (page.url == COMMENTS_FLAG) COMMENTS_FLAG else IMAGE_RETRY_FLAG
-        val reqHeaders = if (page.url == COMMENTS_FLAG) apiHeaders else headers
-        return GET(page.imageUrl!!, reqHeaders).newBuilder()
-            .tag(String::class, flag)
-            .build()
+    override fun getImageRequest(page: Page): Request {
+        val isComments = page.url == COMMENTS_FLAG
+        return super.getImageRequest(page).newBuilder().apply {
+            if (isComments) headers(apiHeaders)
+            tag(String::class, if (isComments) COMMENTS_FLAG else IMAGE_RETRY_FLAG)
+        }.build()
     }
-
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     // Popular
     private fun rankApiUrl(): HttpUrl.Builder = "$apiUrl/comic/rank/list".toHttpUrl().newBuilder()
         .addQueryParameter("tag_id", "0")
 
-    override fun popularMangaRequest(page: Int): Request = GET(
-        rankApiUrl().apply {
-            addQueryParameter("page", page.toString())
-        }.build(),
-        apiHeaders,
+    override suspend fun getPopularManga(page: Int): MangasPage = parseMangaList(
+        client.get(
+            rankApiUrl().apply {
+                addQueryParameter("page", page.toString())
+            }.build(),
+            apiHeaders,
+            Fetch.XHR,
+        ),
     )
 
     private fun genreApiUrl(): HttpUrl.Builder = "$apiUrl/comic/filter/list".toHttpUrl().newBuilder()
         .addQueryParameter("size", DEFAULT_PAGE_SIZE.toString())
 
-    override fun popularMangaParse(response: Response): MangasPage = latestUpdatesParse(response)
-
     // Search
     private fun searchApiUrl(): HttpUrl.Builder = "$apiUrl/search/index".toHttpUrl().newBuilder().addQueryParameter("source", "0")
         .addQueryParameter("size", DEFAULT_PAGE_SIZE.toString())
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
         val ranking = filters.firstInstanceOrNull<RankingGroup>()
         val genres = filters.firstInstanceOrNull<GenreGroup>()
         val searchById = filters.firstInstanceOrNull<SearchByIdFilter>()?.state ?: false
-        val url = when {
-            query.isEmpty() && ranking != null && (ranking.state[0] as TimeFilter).state != 0 -> rankApiUrl().apply {
-                ranking.state.filterIsInstance<QueryFilter>().forEach { it.addQuery(this) }
-                addQueryParameter("page", page.toString())
-            }.build()
+        return when {
+            query.isEmpty() && ranking != null && (ranking.state[0] as TimeFilter).state != 0 -> parseMangaList(
+                client.get(
+                    rankApiUrl().apply {
+                        ranking.state.filterIsInstance<QueryFilter>().forEach { it.addQuery(this) }
+                        addQueryParameter("page", page.toString())
+                    }.build(),
+                    apiHeaders,
+                    Fetch.XHR,
+                ),
+            )
 
-            query.isEmpty() && genres != null -> genreApiUrl().apply {
-                genres.state.filterIsInstance<QueryFilter>().forEach { it.addQuery(this) }
-                addQueryParameter("page", page.toString())
-            }.build()
+            query.isEmpty() && genres != null -> client.get(
+                genreApiUrl().apply {
+                    genres.state.filterIsInstance<QueryFilter>().forEach { it.addQuery(this) }
+                    addQueryParameter("page", page.toString())
+                }.build(),
+                apiHeaders,
+                Fetch.XHR,
+            ).parseAs<ResponseDto<PageDto>>().data.toMangasPage(page)
 
-            query.isNotBlank() && searchById && query.toIntOrNull()?.let { it > 0 } ?: false -> getMangaUrl(query)
+            query.isNotBlank() && searchById && query.toIntOrNull()?.let { it > 0 } ?: false ->
+                MangasPage(listOf(fetchMangaDetails(query)), false)
 
-            else -> searchApiUrl().apply {
-                addQueryParameter("keyword", query)
-                addQueryParameter("page", page.toString())
-            }.build()
-        }
-        return GET(url, apiHeaders)
-    }
-
-    override fun searchMangaParse(response: Response): MangasPage {
-        val url = response.request.url
-        return if (url.toString().startsWith("$apiUrl/comic/rank/list")) {
-            latestUpdatesParse(response)
-        } else if (url.toString().startsWith("$apiUrl/comic/detail")) {
-            MangasPage(listOf(mangaDetailsParse(response)), false)
-        } else {
-            // "$apiUrl/comic/filter/list" or "$apiUrl/search/index"
-            response.parseAs<ResponseDto<PageDto>>().data.toMangasPage(url.queryParameter("page")!!.toInt())
+            else -> client.get(
+                searchApiUrl().apply {
+                    addQueryParameter("keyword", query)
+                    addQueryParameter("page", page.toString())
+                }.build(),
+                apiHeaders,
+                Fetch.XHR,
+            ).parseAs<ResponseDto<PageDto>>().data.toMangasPage(page)
         }
     }
 
     // Latest
     // "$apiUrl/comic/update/list/1/$page" is same content
-    override fun latestUpdatesRequest(page: Int): Request = GET("$apiUrl/comic/update/list/0/$page", apiHeaders)
+    override suspend fun getLatestUpdates(page: Int): MangasPage = parseMangaList(client.get("$apiUrl/comic/update/list/0/$page", apiHeaders, Fetch.XHR))
 
-    override fun latestUpdatesParse(response: Response): MangasPage {
+    private fun parseMangaList(response: Response): MangasPage {
         val mangas = response.parseAs<ResponseDto<List<PageItemDto>?>>().data
         if (mangas.isNullOrEmpty()) {
             throw Exception("没有更多结果了")
@@ -336,7 +327,7 @@ class Zaimanhua :
         return MangasPage(mangas.map { it.toSManga() }, true)
     }
 
-    override fun getFilterList() = FilterList(
+    override fun getFilterList(data: JsonElement?) = FilterList(
         SearchByIdFilter(),
         RankingGroup(),
         Filter.Separator(),
@@ -347,7 +338,7 @@ class Zaimanhua :
     private fun chapterCommentsUrl(comicId: String, chapterId: String) = "$apiUrl/viewpoint/list?comicId=$comicId&chapterId=$chapterId"
 
     companion object {
-        val USE_CACHE = CacheControl.Builder().maxStale(170, TimeUnit.SECONDS).build()
+        val USE_CACHE = CacheControl.Builder().maxStale(170.seconds).build()
         const val USERNAME_PREF = "USERNAME"
         const val PASSWORD_PREF = "PASSWORD"
         const val TOKEN_PREF = "TOKEN"
@@ -373,7 +364,6 @@ class Zaimanhua :
                 setOnPreferenceChangeListener { _, _ ->
                     // clean token after username/password changed
                     preferences.edit().putString(TOKEN_PREF, "").apply()
-                    apiHeaders = apiHeaders.newBuilder().setToken("").build()
                     true
                 }
             }.let(screen::addPreference)
@@ -385,7 +375,6 @@ class Zaimanhua :
                 setOnPreferenceChangeListener { _, _ ->
                     // clean token after username/password changed
                     preferences.edit().putString(TOKEN_PREF, "").apply()
-                    apiHeaders = apiHeaders.newBuilder().setToken("").build()
                     true
                 }
             }.let(screen::addPreference)

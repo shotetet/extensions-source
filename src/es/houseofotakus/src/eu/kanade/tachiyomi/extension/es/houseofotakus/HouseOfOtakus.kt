@@ -1,16 +1,13 @@
 package eu.kanade.tachiyomi.extension.es.houseofotakus
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
-import java.text.SimpleDateFormat
+import eu.kanade.tachiyomi.multisrc.madara.MadaraBase.ChapterMode
+import keiyoushi.annotation.Source
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class HouseOfOtakus :
-    Madara(
-        "House Of Otakus",
-        "https://houseofotakusv2.xyz",
-        "es",
-        dateFormat = SimpleDateFormat("MMMM dd, yyyy", Locale("es")),
-    ) {
-    override val useLoadMoreRequest = LoadMoreStrategy.Always
-    override val useNewChapterEndpoint = true
+@Source
+abstract class HouseOfOtakus : Madara() {
+    override val chapterMode = ChapterMode.MangaAjax
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("MMMM dd, yyyy", Locale("es"))
 }

@@ -1,25 +1,16 @@
 package eu.kanade.tachiyomi.extension.es.begatranslation
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
-import eu.kanade.tachiyomi.source.model.SManga
-import org.jsoup.nodes.Element
-import java.text.SimpleDateFormat
+import keiyoushi.annotation.Source
+import keiyoushi.network.get
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class BegaTranslation :
-    Madara(
-        "Bega Translation",
-        "https://begatranslation.com",
-        "es",
-        SimpleDateFormat("dd MMMM, yyyy", Locale("es")),
-    ) {
-    override val useNewChapterEndpoint = true
+@Source
+abstract class BegaTranslation : Madara() {
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("dd MMMM, yyyy", Locale.forLanguageTag("es"))
+    override val chapterMode = ChapterMode.MangaAjax
     override val mangaSubString = "series"
 
-    override fun popularMangaFromElement(element: Element): SManga = super.popularMangaFromElement(element).apply {
-        thumbnail_url = thumbnail_url?.replaceFirst("-175x238", "")
-    }
-    override fun searchMangaFromElement(element: Element): SManga = super.searchMangaFromElement(element).apply {
-        thumbnail_url = thumbnail_url?.replaceFirst("-193x278", "")
-    }
+    override fun processThumbnail(url: String?, fromSearch: Boolean) = url?.replaceFirst(if (fromSearch) "-193x278" else "-175x238", "")
 }

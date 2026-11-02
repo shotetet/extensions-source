@@ -1,13 +1,10 @@
 package eu.kanade.tachiyomi.extension.en.wearehunger
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
+import eu.kanade.tachiyomi.multisrc.madara.MadaraBase.ChapterMode
+import keiyoushi.annotation.Source
 
-class Wearehunger :
-    Madara(
-        "Wearehunger",
-        "https://www.wearehunger.site",
-        "en",
-    ) {
-    override val useLoadMoreRequest = LoadMoreStrategy.Never
-    override val useNewChapterEndpoint = true
+@Source
+abstract class Wearehunger : Madara() {
+    override val chapterMode = ChapterMode.MangaAjax
 }

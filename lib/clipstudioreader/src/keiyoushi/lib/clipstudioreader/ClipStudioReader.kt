@@ -1,159 +1,186 @@
 package keiyoushi.lib.clipstudioreader
 
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.utils.asJsoup
 import keiyoushi.utils.parseAs
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import okhttp3.Headers
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Response
-import org.jsoup.Jsoup
+import okhttp3.OkHttpClient
 import org.jsoup.nodes.Document
 import org.jsoup.parser.Parser
 
-abstract class ClipStudioReader : HttpSource() {
-    override val client = network.cloudflareClient.newBuilder()
-        .addInterceptor(Deobfuscator())
-        .addInterceptor(ImageInterceptor())
-        .build()
+/**
+ * Fetches the page list of a loaded `Clip Studio Reader` viewer page.
+ *
+ * @param document The loaded viewer page.
+ * @param headers The [Headers] to use for requests.
+ * @return The pages, or an empty list if an EPUB has no images.
+ */
+suspend fun OkHttpClient.fetchPages(document: Document, headers: Headers): List<Page> {
+    val viewerUrl = document.location().toHttpUrl()
+    val meta = document.selectFirst("div#meta")
+    // EPUBs and the vertical (webtoon) viewer keep their parameters in the URL only
+    if (meta == null || viewerUrl.queryParameter("c") != null) return fetchPages(viewerUrl, headers)
 
-    override fun headersBuilder() = super.headersBuilder()
-        .set("Referer", "$baseUrl/")
+    return fetchComicPages(
+        cgi = meta.selectFirst("input[name=cgi]")!!.absUrl("value").toHttpUrl(),
+        param = meta.selectFirst("input[name=param]")!!.attr("value"),
+        trial = meta.selectFirst("input[name=trial]")?.attr("value"),
+        headers = headers,
+    )
+}
 
-    override fun pageListParse(response: Response): List<Page> {
-        val requestUrl = response.request.url
-        val contentId = requestUrl.queryParameter("c")
+/**
+ * Fetches the page list of a loaded `Clip Studio Reader` viewer page, automatically retrieving the
+ * headers from the current [HttpSource] context receiver.
+ *
+ * @see fetchPages
+ */
+context(source: HttpSource)
+suspend fun OkHttpClient.fetchPages(document: Document): List<Page> = fetchPages(document, source.headers)
 
-        if (contentId != null) {
-            // EPUB-based path
-            val tokenUrl = "$baseUrl/api/tokens/viewer?content_id=$contentId".toHttpUrl()
-            val tokenResponse = client.newCall(GET(tokenUrl, headers)).execute()
-            val viewerToken = tokenResponse.parseAs<TokenResponse>().token
+/**
+ * Fetches the page list straight from a `Clip Studio Reader` viewer URL that carries its parameters,
+ * `cgi` and `param` (and `trial`) for comics or `c` (and `t`) for EPUBs.
+ *
+ * @param viewerUrl The viewer URL.
+ * @param headers The [Headers] to use for requests.
+ * @return The pages, or an empty list if an EPUB has no images.
+ */
+suspend fun OkHttpClient.fetchPages(viewerUrl: HttpUrl, headers: Headers): List<Page> {
+    if (viewerUrl.queryParameter("c") != null) return fetchEpubPages(viewerUrl, headers)
 
-            val metaUrl = "$baseUrl/api/contents/$contentId/meta".toHttpUrl()
-            val apiHeaders = headersBuilder().add("Authorization", "Bearer $viewerToken").build()
-            val metaResponse = client.newCall(GET(metaUrl, apiHeaders)).execute()
-            val contentBaseUrl = metaResponse.parseAs<MetaResponse>().content.baseUrl
+    return fetchComicPages(
+        cgi = viewerUrl.resolve(viewerUrl.queryParameter("cgi")!!)!!,
+        param = viewerUrl.queryParameter("param")!!.replace(' ', '+'),
+        trial = viewerUrl.queryParameter("trial"),
+        headers = headers,
+    )
+}
 
-            val preprocessUrl = "$contentBaseUrl/preprocess-settings.json"
-            val obfuscationResponse = client.newCall(GET(preprocessUrl, headers)).execute()
-            val obfuscationKey = obfuscationResponse.parseAs<PreprocessSettings>().obfuscateImageKey
+/**
+ * Fetches the page list straight from a `Clip Studio Reader` viewer URL, automatically retrieving the
+ * headers from the current [HttpSource] context receiver.
+ *
+ * @see fetchPages
+ */
+context(source: HttpSource)
+suspend fun OkHttpClient.fetchPages(viewerUrl: HttpUrl): List<Page> = fetchPages(viewerUrl, source.headers)
 
-            val containerUrl = "$contentBaseUrl/META-INF/container.xml"
-            val containerResponse = client.newCall(GET(containerUrl, headers)).execute()
-            val containerDoc = Jsoup.parse(containerResponse.body.string(), containerUrl, Parser.xmlParser())
-            val opfPath = containerDoc.selectFirst("*|rootfile")?.attr("full-path")
-                ?: throw Exception("Failed to find rootfile in container.xml")
+private suspend fun OkHttpClient.fetchComicPages(cgi: HttpUrl, param: String, trial: String?, headers: Headers): List<Page> {
+    val viewerHeaders = headers.newBuilder().set("Referer", cgi.viewerReferer()).build()
+    var viewMode = VIEW_MODE_HYBRID
+    var timeKey = fetchTimeKey(cgi, param, viewMode, viewerHeaders)
+    // some webtoons only open in the vertical view mode
+    if (timeKey.selectFirst("Code")?.text() == CODE_VIEW_MODE_ERROR) {
+        viewMode = VIEW_MODE_VERTICAL
+        timeKey = fetchTimeKey(cgi, param, viewMode, viewerHeaders)
+    }
+    if (timeKey.selectFirst("Code")?.text() != CODE_SUCCESS) throw Exception("Viewer error: ${timeKey.text()}")
+    val key = timeKey.selectFirst("Content")!!.text()
 
-            val opfUrl = (contentBaseUrl.removeSuffix("/") + "/" + opfPath).toHttpUrl()
-            val opfResponse = client.newCall(GET(opfUrl, headers)).execute()
-            val opfDoc = opfResponse.asJsoup()
+    val face = get(cgi.fileUrl(MODE_FACE_XML, "face.xml", viewMode, key), viewerHeaders, Fetch.XHR).asJsoup(Parser.xmlParser())
+    val totalPages = face.selectFirst("TotalPage")!!.text().toInt()
+    val gridWidth = face.selectFirst("Scramble > Width")!!.text()
+    val gridHeight = face.selectFirst("Scramble > Height")!!.text()
 
-            val imageManifestItems = opfDoc.select("*|item[media-type^=image/]")
-                .sortedBy { it.attr("href") }
-            if (imageManifestItems.isEmpty()) {
-                throw Exception("No image pages found in the EPUB manifest")
-            }
+    val pageNumbers = trial?.split('_')?.takeIf { it.size == 2 }?.let { (first, last) -> first.toInt()..last.toInt() }
+        ?: 0..<totalPages
 
-            return imageManifestItems.mapIndexed { i, item ->
-                val href = item.attr("href")
-                val imageUrl = opfUrl.resolve(href)!!.newBuilder()
-                    .fragment("key=$obfuscationKey")
-                Page(i, imageUrl = imageUrl.build().toString())
-            }
-        }
-
-        // param/cgi-based XML path
-        // param/cgi in URL
-        var authkey = requestUrl.queryParameter("param")?.replace(" ", "+")
-        var endpoint = requestUrl.queryParameter("cgi")
-
-        // param/cgi in HTML
-        if (authkey.isNullOrEmpty() || endpoint.isNullOrEmpty()) {
-            val document = response.asJsoup()
-            authkey = document.selectFirst("div#meta input[name=param]")?.attr("value")
-                ?: throw Exception("Could not find auth key")
-            endpoint = document.selectFirst("div#meta input[name=cgi]")?.attr("value")
-                ?: throw Exception("Could not find endpoint")
-        }
-
-        val viewerUrl = baseUrl.toHttpUrl().resolve(endpoint)
-            ?: throw Exception("Could not resolve endpoint URL: $endpoint")
-
-        val faceUrl = viewerUrl.newBuilder().apply {
-            addQueryParameter("mode", MODE_DL_FACE_XML)
-            addQueryParameter("reqtype", REQUEST_TYPE_FILE)
-            addQueryParameter("vm", "4")
-            addQueryParameter("file", "face.xml")
-            addQueryParameter("param", authkey)
-        }.build()
-
-        val faceResponse = client.newCall(GET(faceUrl, headers)).execute()
-        if (!faceResponse.isSuccessful) throw Exception("HTTP error ${faceResponse.code} while fetching face.xml")
-        val faceData = faceResponse.use { parseFaceData(it.asJsoup()) }
-
-        return (0 until faceData.totalPages).map { i ->
-            val pageFileName = i.toString().padStart(4, '0') + ".xml"
-            val pageXmlUrl = viewerUrl.newBuilder().apply {
-                addQueryParameter("mode", MODE_DL_PAGE_XML)
-                addQueryParameter("reqtype", REQUEST_TYPE_FILE)
-                addQueryParameter("vm", "4")
-                addQueryParameter("file", pageFileName)
-                addQueryParameter("param", authkey)
-            }.fragment("${faceData.scrambleWidth}/${faceData.scrambleHeight}")
-            Page(i, url = pageXmlUrl.build().toString())
-        }
+    // Omf books store two pages per sheet, the others list single pages like covers or webtoon slices
+    val spreads = if ("Omf" in face.selectFirst("OptionId")?.text().orEmpty()) {
+        face.selectFirst("DoublePagesMap")?.text().orEmpty().split(',').mapNotNullTo(HashSet()) { it.trim().toIntOrNull() }
+    } else {
+        emptySet()
     }
 
-    override fun imageUrlParse(response: Response): String {
-        val requestUrl = response.request.url
-        val document = response.asJsoup()
+    // right-to-left books (binding 0) start with the right half
+    val halves = if (face.selectFirst("Binding")?.text() == "1") listOf(HALF_LEFT, HALF_RIGHT) else listOf(HALF_RIGHT, HALF_LEFT)
+    val fragment = "$PAGE_FRAGMENT,$gridWidth,$gridHeight"
+    val spreadFragments = halves.map { "$fragment,$it" }
 
-        val authkey = requestUrl.queryParameter("param")!!
-        val (scrambleGridW, scrambleGridH) = requestUrl.fragment!!.split('/')
-        val endpointUrl = requestUrl.newBuilder().query(null).fragment(null).build()
-
-        val pageIndex = document.selectFirst("PageNo")?.text()?.toIntOrNull()
-            ?: throw Exception("Could not find PageNo")
-        val scrambleArray = document.selectFirst("Scramble")?.text()
-        val parts = document.select("Kind").mapNotNull {
-            val type = it.text().toIntOrNull()
-            val number = it.attr("No")
-            val isScrambled = it.attr("scramble") == "1"
-            if (type == null || number.isEmpty()) return@mapNotNull null
-
-            val partFileName = "${pageIndex.toString().padStart(4, '0')}_${number.padStart(4, '0')}.bin"
-            PagePart(partFileName, type, isScrambled)
-        }
-
-        val imagePart = parts.firstOrNull { it.type in SUPPORTED_IMAGE_TYPES }
-            ?: throw Exception("No supported image parts found for page")
-
-        val imageUrlBuilder = endpointUrl.newBuilder().apply {
-            addQueryParameter("mode", imagePart.type.toString())
-            addQueryParameter("file", imagePart.fileName)
-            addQueryParameter("reqtype", REQUEST_TYPE_FILE)
-            addQueryParameter("param", authkey)
-        }
-
-        if (imagePart.isScrambled && !scrambleArray.isNullOrEmpty()) {
-            imageUrlBuilder.fragment("size=$scrambleArray/$scrambleGridW/$scrambleGridH")
-        }
-        return imageUrlBuilder.build().toString()
-    }
-
-    private fun parseFaceData(document: Document): FaceData {
-        val totalPages = document.selectFirst("TotalPage")?.text()?.toIntOrNull()
-        val scrambleWidth = document.selectFirst("Scramble > Width")?.text()?.toIntOrNull()
-        val scrambleHeight = document.selectFirst("Scramble > Height")?.text()?.toIntOrNull()
-        return FaceData(totalPages!!, scrambleWidth!!, scrambleHeight!!)
-    }
-
-    companion object {
-        private const val MODE_DL_FACE_XML = "7"
-        private const val MODE_DL_PAGE_XML = "8"
-        private const val REQUEST_TYPE_FILE = "0"
-
-        private val SUPPORTED_IMAGE_TYPES = setOf(1, 2, 3) // JPEG, GIF, PNG
+    return pageNumbers.flatMap { pageNumber ->
+        val pageUrl = cgi.fileUrl(MODE_PAGE_XML, pageNumber.toString().padStart(4, '0') + ".xml", viewMode, key)
+        val fragments = if (pageNumber in spreads) spreadFragments else listOf(fragment)
+        fragments.map { pageUrl.newBuilder().fragment(it).build().toString() }
+    }.mapIndexed { i, imageUrl ->
+        Page(i, imageUrl = imageUrl)
     }
 }
+
+private suspend fun OkHttpClient.fetchTimeKey(cgi: HttpUrl, param: String, viewMode: String, headers: Headers): Document {
+    val url = cgi.newBuilder()
+        .addQueryParameter("mode", MODE_TIME_KEY)
+        .addQueryParameter("reqtype", "1")
+        .addQueryParameter("vm", viewMode)
+        .addQueryParameter("param", param)
+        .build()
+    return get(url, headers, Fetch.XHR).asJsoup(Parser.xmlParser())
+}
+
+private suspend fun OkHttpClient.fetchEpubPages(viewerUrl: HttpUrl, headers: Headers): List<Page> = coroutineScope {
+    val contentId = viewerUrl.queryParameter("c")!!
+
+    val configUrl = viewerUrl.resolve("${viewerUrl.queryParameter("s") ?: "default"}.jsonc")!!
+    val apiUrl = viewerUrl.resolve(get(configUrl, headers, Fetch.XHR).parseAs<ViewerConfig>().api)!!
+
+    val tokenUrl = apiUrl.newBuilder()
+        .addPathSegments("tokens/viewer")
+        .addQueryParameter("content_id", contentId)
+        .build()
+
+    val tokenHeaders = viewerUrl.queryParameter("t")?.let { headers.withBearer(it) } ?: headers
+    val token = get(tokenUrl, tokenHeaders, Fetch.XHR).parseAs<TokenResponse>().token
+    val apiHeaders = headers.withBearer(token)
+
+    val metaUrl = apiUrl.newBuilder().addPathSegments("contents/$contentId/meta").build()
+    val contentUrl = get(metaUrl, apiHeaders, Fetch.XHR).parseAs<MetaResponse>().content.baseUrl.toHttpUrl()
+
+    val preprocessUrl = contentUrl.newBuilder().addPathSegment("preprocess-settings.json").build()
+    val imageKey = async { get(preprocessUrl, apiHeaders, Fetch.XHR).parseAs<PreprocessSettings>().imageKey }
+
+    val containerUrl = contentUrl.newBuilder().addPathSegments("META-INF/container.xml").build()
+    val container = get(containerUrl, apiHeaders, Fetch.XHR).asJsoup(Parser.xmlParser())
+    val opfUrl = contentUrl.newBuilder().addPathSegments(container.selectFirst("*|rootfile")!!.attr("full-path")).build()
+    val opf = get(opfUrl, apiHeaders, Fetch.XHR).asJsoup(Parser.xmlParser())
+
+    val fragment = "$EPUB_FRAGMENT,${imageKey.await() ?: ""},$token"
+    opf.select("*|item[media-type^=image/]").mapIndexed { i, item ->
+        val imageUrl = opfUrl.resolve(item.attr("href"))!!.newBuilder()
+            .fragment(fragment)
+            .build()
+        Page(i, imageUrl = imageUrl.toString())
+    }
+}
+
+private fun HttpUrl.fileUrl(mode: String, file: String, viewMode: String, key: String): HttpUrl = newBuilder()
+    .addQueryParameter("mode", mode)
+    .addQueryParameter("reqtype", "0")
+    .addQueryParameter("vm", viewMode)
+    .addQueryParameter("file", file)
+    .addQueryParameter("param", key)
+    .build()
+
+// Some servers answer every request with view mode error unless the Referer is in the viewer's directory
+internal fun HttpUrl.viewerReferer(): String = resolve("./")!!.toString()
+
+private fun Headers.withBearer(token: String) = newBuilder().set("Authorization", "Bearer $token").build()
+
+private const val MODE_FACE_XML = "7"
+private const val MODE_PAGE_XML = "8"
+private const val MODE_TIME_KEY = "999"
+private const val VIEW_MODE_VERTICAL = "2"
+private const val VIEW_MODE_HYBRID = "4"
+private const val CODE_SUCCESS = "1000"
+private const val CODE_VIEW_MODE_ERROR = "2005"
+
+internal const val PAGE_FRAGMENT = "csr-page"
+internal const val EPUB_FRAGMENT = "csr-epub"
+internal const val HALF_LEFT = "L"
+internal const val HALF_RIGHT = "R"

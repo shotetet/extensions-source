@@ -3,46 +3,42 @@ package eu.kanade.tachiyomi.extension.pt.azuretoons
 import android.content.SharedPreferences
 import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.fetch
+import keiyoushi.network.get
+import keiyoushi.network.rateLimit
+import keiyoushi.source.KeiSource
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
-import keiyoushi.utils.toJsonString
-import okhttp3.HttpUrl.Companion.toHttpUrl
+import keiyoushi.utils.toJsonRequestBody
+import okhttp3.Headers
 import okhttp3.Interceptor
-import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import kotlin.jvm.Synchronized
 
-class Azuretoons :
-    HttpSource(),
+@Source
+abstract class Azuretoons :
+    KeiSource(),
     ConfigurableSource {
 
-    override val name = "Azuretoons"
-    override val baseUrl = "https://azuretoons.com"
-    override val lang = "pt-BR"
-    override val supportsLatest = true
-
-    private val apiUrl = "https://azuretoons.com/api"
+    private val apiUrl get() = "$baseUrl/api"
 
     private var cachedToken: String? = null
     private var tokenExpiryTime: Long = 0L
     private val preferences: SharedPreferences by getPreferencesLazy()
 
-    override val client = network.cloudflareClient.newBuilder()
+    override fun OkHttpClient.Builder.configureClient() = addInterceptor(::authIntercept)
         .rateLimit(2)
-        .addInterceptor(::authIntercept)
-        .build()
 
     private fun authIntercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
@@ -61,21 +57,18 @@ class Azuretoons :
         this
     }
 
-    @Synchronized
     private fun clearTokenAndRefresh(): String? {
         cachedToken = null
         tokenExpiryTime = 0L
         return getValidToken()
     }
 
-    @Synchronized
     private fun getValidToken(): String? {
         val now = System.currentTimeMillis()
         if (cachedToken != null && now < tokenExpiryTime) return cachedToken
         return fetchNewToken()
     }
 
-    @Synchronized
     private fun fetchNewToken(): String? {
         return try {
             val email = preferences.getString(EMAIL_PREF, "")
@@ -87,16 +80,15 @@ class Azuretoons :
         }
     }
 
-    @Synchronized
     protected open fun loginAndGetToken(email: String, password: String): String? {
         try {
             val body = AzuretoonsLoginRequestDto(
                 identifier = email.trim(),
                 password = password,
-            ).toJsonString().toRequestBody("application/json".toMediaType())
-            val headers = headersBuilder().set("Accept", "application/json").build()
-            val response = network.cloudflareClient.newCall(
-                POST("$apiUrl/auth/login", headers, body),
+            ).toJsonRequestBody()
+            val loginHeaders = headers.newBuilder().set("Accept", "application/json").build()
+            val response = network.client.newCall(
+                POST("$apiUrl/auth/login", loginHeaders, body).newBuilder().fetch(Fetch.XHR).build(),
             ).execute()
 
             if (!response.isSuccessful) {
@@ -114,48 +106,32 @@ class Azuretoons :
         }
     }
 
-    override fun headersBuilder() = super.headersBuilder()
-        .set("Accept", ACCEPT)
-        .set("Accept-Language", ACCEPT_LANGUAGE)
+    override fun Headers.Builder.configureHeaders() = set("Accept-Language", ACCEPT_LANGUAGE)
         .set("Pragma", PRAGMA)
-        .set("Referer", "$baseUrl/")
-        .set("Origin", baseUrl)
 
     // ============================== Popular (Browse) =======================
-    override fun popularMangaRequest(page: Int): Request = GET("$apiUrl/obras", headers)
-
-    override fun popularMangaParse(response: Response): MangasPage {
-        val dto = response.parseAs<List<AzuretoonsMangaDto>>()
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val dto = client.get("$apiUrl/obras", Fetch.XHR).parseAs<List<AzuretoonsMangaDto>>()
         val mangas = dto.sortedByDescending { it.viewCount }.map { it.toSManga() }
         return MangasPage(mangas, hasNextPage = false)
     }
 
     // ============================= Latest ===================================
 
-    override fun latestUpdatesRequest(page: Int): Request = GET("$apiUrl/obras", headers)
-
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        val dto = response.parseAs<List<AzuretoonsMangaDto>>()
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
+        val dto = client.get("$apiUrl/obras", Fetch.XHR).parseAs<List<AzuretoonsMangaDto>>()
         val mangas = dto.map { it.toSManga() }
         return MangasPage(mangas, hasNextPage = false)
     }
 
     // =============================== Search (na mão: filtra por título) =====
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = "$apiUrl/obras".toHttpUrl().newBuilder()
-            .fragment(query)
-            .build()
-        return GET(url, headers)
-    }
-
-    override fun searchMangaParse(response: Response): MangasPage {
-        val query = response.request.url.fragment
-        val dto = response.parseAs<List<AzuretoonsMangaDto>>()
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
+        val dto = client.get("$apiUrl/obras", Fetch.XHR).parseAs<List<AzuretoonsMangaDto>>()
         val mangas = dto
             .map { it.toSManga() }
             .let { list ->
-                if (!query.isNullOrEmpty()) {
-                    list.filter { it.title.lowercase().contains(query) }
+                if (query.isNotEmpty()) {
+                    list.filter { it.title.contains(query, ignoreCase = true) }
                 } else {
                     list
                 }
@@ -164,44 +140,29 @@ class Azuretoons :
     }
 
     // ============================ Manga Details ============================
-    override fun getMangaUrl(manga: SManga): String = "$baseUrl${manga.url}"
-
-    override fun mangaDetailsRequest(manga: SManga): Request {
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
         val slug = manga.url.substringAfter("/obra/").substringBefore("/")
-        return GET("$apiUrl/obras/slug/$slug", headers)
-    }
-
-    override fun mangaDetailsParse(response: Response): SManga {
-        val dto = response.parseAs<AzuretoonsMangaDto>()
-        return dto.toSManga()
-    }
-
-    // ============================== Chapters ================================
-    override fun getChapterUrl(chapter: SChapter): String = "$baseUrl${chapter.url}"
-
-    override fun chapterListRequest(manga: SManga): Request = mangaDetailsRequest(manga)
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val manga = response.parseAs<AzuretoonsMangaDto>()
-        return manga.chapters
-            .map { it.toSChapter(manga.slug) }
+        val dto = client.get("$apiUrl/obras/slug/$slug", Fetch.XHR).parseAs<AzuretoonsMangaDto>()
+        val chapterList = dto.chapters
+            .map { it.toSChapter(dto.slug) }
             .distinctBy { it.url }
             .sortedByDescending { it.chapter_number }
+        return SMangaUpdate(dto.toSManga(), chapterList)
     }
 
     // =============================== Pages =================================
-    override fun pageListRequest(chapter: SChapter): Request {
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
         val chapterId = chapter.url.substringAfter("/capitulo/")
         val slug = chapter.url.substringAfter("/obra/").substringBefore("/")
-        return GET("$apiUrl/chapters/read/$slug/$chapterId", headers)
+        return client.get("$apiUrl/chapters/read/$slug/$chapterId", Fetch.XHR)
+            .parseAs<AzuretoonsChapterDetailDto>()
+            .toPageList()
     }
-
-    override fun pageListParse(response: Response): List<Page> {
-        val dto = response.parseAs<AzuretoonsChapterDetailDto>()
-        return dto.toPageList()
-    }
-
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         EditTextPreference(screen.context).apply {
@@ -220,7 +181,6 @@ class Azuretoons :
     }
 
     companion object {
-        private const val ACCEPT = "*/*"
         private const val ACCEPT_LANGUAGE = "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
         private const val PRAGMA = "no-cache"
         private const val EMAIL_PREF = "email"

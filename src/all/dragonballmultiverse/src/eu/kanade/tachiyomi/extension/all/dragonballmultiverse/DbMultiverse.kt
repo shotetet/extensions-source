@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.text.LineBreaker
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
@@ -13,97 +14,131 @@ import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.util.asJsoup
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.asJsoup
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.toJsonString
 import kotlinx.serialization.Serializable
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.Request
+import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.asResponseBody
 import okio.Buffer
-import rx.Observable
 
-abstract class DbMultiverse(override val lang: String, private val internalLang: String) : HttpSource() {
+@Source
+abstract class DbMultiverse : KeiSource() {
 
-    override val name =
-        if (internalLang.endsWith("_PA")) {
-            "Dragon Ball Multiverse Parody"
-        } else {
-            "Dragon Ball Multiverse"
+    private val internalLang: String
+        get() = when (lang) {
+            "en" -> "en"
+            "fr" -> if (name.endsWith("Parody")) "fr_PA" else "fr"
+            "ja" -> "jp"
+            "zh" -> "cn"
+            "es" -> "es"
+            "it" -> "it"
+            "pt" -> "pt"
+            "de" -> "de"
+            "pl" -> "pl"
+            "nl" -> "nl"
+            "tr" -> "tr_TR"
+            "pt-BR" -> "pt_BR"
+            "hu" -> "hu_HU"
+            "ga" -> "ga_ES"
+            "ca" -> "ct_CT"
+            "no" -> "no_NO"
+            "ru" -> "ru_RU"
+            "ro" -> "ro_RO"
+            "eu" -> "eu_EH"
+            "lt" -> "lt_LT"
+            "hr" -> "hr_HR"
+            "ko" -> "kr_KR"
+            "fi" -> "fi_FI"
+            "he" -> "he_HE"
+            "bg" -> "bg_BG"
+            "sv" -> "sv_SE"
+            "el" -> "gr_GR"
+            "es-419" -> "es_CO"
+            "ar" -> "ar_JO"
+            "fil" -> "tl_PI"
+            "la" -> "la_LA"
+            "da" -> "da_DK"
+            "co" -> "co_FR"
+            "br" -> "br_FR"
+            "vec" -> "xx_VE"
+            "lmo" -> "xx_LMO"
+            else -> lang
         }
-
-    override val baseUrl = "https://www.dragonball-multiverse.com"
 
     override val supportsLatest = false
 
-    override val client = super.client.newBuilder()
-        .addNetworkInterceptor(::drawBalloonsOnImage)
-        .build()
+    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = addNetworkInterceptor(::drawBalloonsOnImage)
 
-    private fun createManga(type: String) = SManga.create().apply {
-        title = when (type) {
-            "comic" -> "DB Multiverse"
-            "namekseijin" -> "Namekseijin Densetsu"
-            "strip" -> "Minicomic"
-            else -> name
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val document = client.get("$baseUrl/$internalLang/read.html", Fetch.DOCUMENT).asJsoup()
+        val mangas = document.select("#dbm-reads .dbm-read").map { element ->
+            SManga.create().apply {
+                title = element.selectFirst("h3")!!.text()
+                setUrlWithoutDomain(element.selectFirst("a")!!.attr("abs:href"))
+                thumbnail_url = element.selectFirst("img")?.attr("abs:src")
+                description = element.selectFirst("> div")?.text()
+            }
         }
-        status = SManga.ONGOING
-        url = "/$internalLang/chapters.html?comic=$type"
-        description = "Dragon Ball Multiverse (DBM) is a free online comic, made by a whole team of fans. It's our personal sequel to DBZ."
-        thumbnail_url = "$baseUrl/imgs/read/$type.jpg"
+        return MangasPage(mangas, false)
     }
 
-    override fun fetchPopularManga(page: Int): Observable<MangasPage> {
-        // site hosts three titles that can be read by the app
-        return listOf("page", "strip", "namekseijin")
-            .map { createManga(it) }
-            .let { Observable.just(MangasPage(it, hasNextPage = false)) }
-    }
+    override suspend fun getLatestUpdates(page: Int): MangasPage = throw UnsupportedOperationException()
 
-    override fun fetchMangaDetails(manga: SManga): Observable<SManga> = manga.apply {
-        initialized = true
-    }.let { Observable.just(it) }
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage = MangasPage(emptyList(), false)
 
     protected open val chapterListSelector: String = ".cadrelect.chapter"
 
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val document = response.asJsoup()
-        return document.select(chapterListSelector).map {
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        if (!fetchChapters) return SMangaUpdate(manga, chapters)
+
+        val document = client.get(getMangaUrl(manga), Fetch.DOCUMENT).asJsoup()
+        val newChapters = document.select(chapterListSelector).map {
             SChapter.create().apply {
-                val href = it.selectFirst("a")!!.attr("href")
-                setUrlWithoutDomain("/$internalLang/$href")
+                setUrlWithoutDomain(it.selectFirst("a[href]")!!.attr("abs:href"))
                 name = it.selectFirst("h4")!!.text()
             }
         }.reversed()
+
+        return SMangaUpdate(manga, newChapters)
     }
 
     @Serializable
-    data class PageLayout(
+    class PageLayout(
         val scale: Float,
         val balloons: List<BalloonBox>,
     )
 
     @Serializable
-    data class BalloonBox(
+    class BalloonBox(
         val text: String,
         val left: Float,
         val top: Float,
         val width: Float,
     )
 
-    override fun pageListParse(response: Response): List<Page> {
-        val document = response.asJsoup()
-        return document.select(".pageslist a").mapIndexed { index, a ->
-            val href = a.attr("href")
-            Page(index, url = baseUrl + "/$internalLang/$href")
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val document = client.get(getChapterUrl(chapter), Fetch.DOCUMENT).asJsoup()
+        return document.select(".pageslist a[href]").mapIndexed { index, a ->
+            Page(index, url = a.attr("abs:href"))
         }
     }
 
-    override fun imageUrlParse(response: Response): String {
-        val document = response.asJsoup()
+    override suspend fun getImageUrl(page: Page): String {
+        val document = client.get(page.url, Fetch.DOCUMENT).asJsoup()
         val element = document.selectFirst("#balloonsimg")!!
 
         val rawImageUrl = when {
@@ -177,7 +212,7 @@ abstract class DbMultiverse(override val lang: String, private val internalLang:
 
             val layout = StaticLayout.Builder.obtain(b.text, 0, b.text.length, textPaint, w)
                 .setAlignment(Layout.Alignment.ALIGN_CENTER)
-                .setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY)
+                .setBreakStrategy(LineBreaker.BREAK_STRATEGY_HIGH_QUALITY)
                 .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_FULL)
                 .build()
 
@@ -197,20 +232,4 @@ abstract class DbMultiverse(override val lang: String, private val internalLang:
             .body(buffer.asResponseBody("image/jpeg".toMediaType(), buffer.size))
             .build()
     }
-
-    override fun popularMangaParse(response: Response): MangasPage = throw UnsupportedOperationException()
-
-    override fun popularMangaRequest(page: Int): Request = throw UnsupportedOperationException()
-
-    override fun latestUpdatesParse(response: Response): MangasPage = throw UnsupportedOperationException()
-
-    override fun latestUpdatesRequest(page: Int): Request = throw UnsupportedOperationException()
-
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = Observable.just(MangasPage(emptyList(), false))
-
-    override fun searchMangaParse(response: Response): MangasPage = throw UnsupportedOperationException()
-
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = throw UnsupportedOperationException()
-
-    override fun mangaDetailsParse(response: Response): SManga = throw UnsupportedOperationException()
 }

@@ -2,45 +2,34 @@ package eu.kanade.tachiyomi.extension.ru.ninegrid
 
 import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.source.KeiSource
 import keiyoushi.utils.getPreferences
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.tryParse
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.serialization.json.JsonElement
 import okhttp3.Headers
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
-import okhttp3.Response
-import java.text.SimpleDateFormat
-import java.util.Locale
+import kotlin.time.Instant
 
-class NineGrid :
-    HttpSource(),
+@Source
+abstract class NineGrid :
+    KeiSource(),
     ConfigurableSource {
 
-    override val name = "NineGrid"
-    override val lang = "ru"
-    override val supportsLatest = true
-
-    private val preferences = getPreferences {
-        getString(PREF_DEFAULT_BASE_URL, null).let { defaultBaseUrl ->
-            if (defaultBaseUrl != DEFAULT_BASE_URL) {
-                edit()
-                    .putString(PREF_BASE_URL, DEFAULT_BASE_URL)
-                    .putString(PREF_DEFAULT_BASE_URL, DEFAULT_BASE_URL)
-                    .apply()
-            }
-        }
-    }
-
-    override val baseUrl: String
-        get() = preferences.getString(PREF_BASE_URL, DEFAULT_BASE_URL)!!.trimEnd('/')
+    private val preferences = getPreferences()
 
     private val apiKey: String
         get() = preferences.getString(PREF_API_KEY, "") ?: ""
@@ -48,7 +37,7 @@ class NineGrid :
     private val apiBase: String
         get() = "$baseUrl/api/external/v1"
 
-    override fun headersBuilder(): Headers.Builder = super.headersBuilder().apply {
+    override fun Headers.Builder.configureHeaders() = apply {
         add("Accept", "application/json")
         if (apiKey.isNotBlank()) {
             add("Authorization", "Bearer $apiKey")
@@ -57,41 +46,39 @@ class NineGrid :
 
     // Popular
 
-    override fun popularMangaRequest(page: Int): Request {
+    override suspend fun getPopularManga(page: Int): MangasPage {
         val url = "$apiBase/series".toHttpUrl().newBuilder()
             .addQueryParameter("page", (page - 1).toString())
             .addQueryParameter("size", "20")
             .addQueryParameter("sort", "popular")
             .build()
-        return GET(url, headers)
+        return getSeriesList(url)
     }
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        val data = response.parseAs<SeriesListResponse>()
+    private suspend fun getSeriesList(url: HttpUrl): MangasPage {
+        val data = client.get(url, Fetch.XHR).parseAs<SeriesListResponse>()
         val mangas = data.content.map { it.toSManga(apiBase) }
         return MangasPage(mangas, data.page + 1 < data.totalPages)
     }
 
     // Latest
 
-    override fun latestUpdatesRequest(page: Int): Request {
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
         val url = "$apiBase/series".toHttpUrl().newBuilder()
             .addQueryParameter("page", (page - 1).toString())
             .addQueryParameter("size", "20")
             .addQueryParameter("sort", "latest")
             .build()
-        return GET(url, headers)
+        return getSeriesList(url)
     }
-
-    override fun latestUpdatesParse(response: Response): MangasPage = popularMangaParse(response)
 
     // Search
 
-    override fun searchMangaRequest(
+    override suspend fun getSearchMangaList(
         page: Int,
         query: String,
         filters: FilterList,
-    ): Request {
+    ): MangasPage {
         val url = "$apiBase/series".toHttpUrl().newBuilder()
             .addQueryParameter("page", (page - 1).toString())
             .addQueryParameter("size", "20")
@@ -113,26 +100,33 @@ class NineGrid :
             }
         }
 
-        return GET(url.build(), headers)
+        return getSeriesList(url.build())
     }
 
-    override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
+    // Manga Details & Chapter List
 
-    // Manga Details
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate = coroutineScope {
+        val details = async {
+            if (fetchDetails) {
+                client.get("$apiBase/series/${manga.url}", Fetch.XHR).parseAs<SeriesDto>().toSManga(apiBase)
+            } else {
+                manga
+            }
+        }
+        val chapterList = async {
+            if (fetchChapters) getChapterList(manga) else chapters
+        }
 
-    override fun mangaDetailsRequest(manga: SManga): Request = GET("$apiBase/series/${manga.url}", headers)
-
-    override fun mangaDetailsParse(response: Response): SManga {
-        val s = response.parseAs<SeriesDto>()
-        return s.toSManga(apiBase).apply { initialized = true }
+        SMangaUpdate(details.await(), chapterList.await())
     }
 
-    // Chapter List
-
-    override fun chapterListRequest(manga: SManga): Request = GET("$apiBase/series/${manga.url}/issues", headers)
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val data = response.parseAs<IssuesResponse>()
+    private suspend fun getChapterList(manga: SManga): List<SChapter> {
+        val data = client.get("$apiBase/series/${manga.url}/issues", Fetch.XHR).parseAs<IssuesResponse>()
         val chapters = mutableListOf<SChapter>()
 
         for (issue in data.issues) {
@@ -153,7 +147,7 @@ class NineGrid :
                         chapter_number = issue.number
                             .replace(ANNUAL_REGEX, "1000.")
                             .toFloatOrNull() ?: -1f
-                        date_upload = DATE_FORMAT.tryParse(t.createdAt)
+                        date_upload = Instant.tryParse(t.createdAt)
                         scanlator = teamLabel
                     },
                 )
@@ -165,18 +159,14 @@ class NineGrid :
 
     // Page List
 
-    override fun pageListRequest(chapter: SChapter): Request = GET("$apiBase${chapter.url}", headers)
-
-    override fun pageListParse(response: Response): List<Page> {
-        val data = response.parseAs<PagesResponse>()
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val data = client.get("$apiBase${chapter.url}", Fetch.XHR).parseAs<PagesResponse>()
         return data.pages.map { Page(it.index, imageUrl = it.url) }
     }
 
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
-
     // Filters
 
-    override fun getFilterList(): FilterList = FilterList(
+    override fun getFilterList(data: JsonElement?): FilterList = FilterList(
         SortFilter(),
         PublisherFilter(),
         YearFilter(),
@@ -187,13 +177,6 @@ class NineGrid :
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         EditTextPreference(screen.context).apply {
-            key = PREF_BASE_URL
-            title = "URL сервера"
-            summary = "По умолчанию: $DEFAULT_BASE_URL"
-            setDefaultValue(DEFAULT_BASE_URL)
-        }.let(screen::addPreference)
-
-        EditTextPreference(screen.context).apply {
             key = PREF_API_KEY
             title = "API-ключ"
             summary = "Для трекинга прогресса"
@@ -202,13 +185,8 @@ class NineGrid :
     }
 
     companion object {
-        private const val DEFAULT_BASE_URL = "https://9grid.cc"
-        private const val PREF_BASE_URL = "pref_base_url"
-        private const val PREF_DEFAULT_BASE_URL = "pref_default_base_url"
         private const val PREF_API_KEY = "pref_api_key"
-        const val SEARCH_PREFIX = "id:"
 
         private val ANNUAL_REGEX = Regex("^annual\\s*", RegexOption.IGNORE_CASE)
-        private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.ROOT)
     }
 }

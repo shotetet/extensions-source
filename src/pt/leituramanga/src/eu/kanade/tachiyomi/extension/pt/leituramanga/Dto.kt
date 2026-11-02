@@ -5,8 +5,7 @@ import eu.kanade.tachiyomi.source.model.SManga
 import keiyoushi.utils.tryParse
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import java.text.SimpleDateFormat
-import java.util.Locale
+import kotlin.time.Instant
 
 @Serializable
 class MangaResponseDto<T>(
@@ -32,7 +31,7 @@ class MangaDto(
     val slug: String,
     val author: String? = null,
     val description: String? = null,
-    val status: String? = null,
+    val status: Int? = null,
     val genres: List<GenreDto>? = emptyList(),
     val alternativeTitles: List<String>? = emptyList(),
 ) {
@@ -49,8 +48,10 @@ class MangaDto(
             }
         }
         status = when (this@MangaDto.status) {
-            "Ongoing" -> SManga.ONGOING
-            "Completed" -> SManga.COMPLETED
+            0, 1 -> SManga.ONGOING
+            2 -> SManga.COMPLETED
+            3 -> SManga.CANCELLED
+            4 -> SManga.ON_HIATUS
             else -> SManga.UNKNOWN
         }
         genre = this@MangaDto.genres?.joinToString { it.name }
@@ -77,11 +78,7 @@ class ChapterDto(
         val numberStr = chapterNumber.toString().removeSuffix(".0")
         name = title ?: "Capítulo $numberStr"
         url = "/manga/$mangaSlug/chapter/$numberStr"
-        date_upload = dateFormat.tryParse(releaseDate) ?: 0L
-    }
-
-    companion object {
-        private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT)
+        date_upload = Instant.tryParse(releaseDate)
     }
 }
 

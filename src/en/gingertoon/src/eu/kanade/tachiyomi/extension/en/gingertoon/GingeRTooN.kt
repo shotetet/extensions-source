@@ -1,16 +1,12 @@
 package eu.kanade.tachiyomi.extension.en.gingertoon
 
-import eu.kanade.tachiyomi.multisrc.madara.Madara
-import java.text.SimpleDateFormat
+import eu.kanade.tachiyomi.multisrc.madara.MadaraNoAjax
+import keiyoushi.annotation.Source
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class GingeRTooN :
-    Madara(
-        "GingeRTooN",
-        "https://gingertoon.com",
-        "en",
-        dateFormat = SimpleDateFormat("MM.dd.yyyy", Locale.ROOT),
-    ) {
-    override val useLoadMoreRequest = LoadMoreStrategy.Never
-    override val useNewChapterEndpoint = true
+@Source
+abstract class GingeRTooN : MadaraNoAjax() {
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("MM.dd.uuuu", Locale.ROOT)
+    override val chapterMode = ChapterMode.MangaAjax
 }

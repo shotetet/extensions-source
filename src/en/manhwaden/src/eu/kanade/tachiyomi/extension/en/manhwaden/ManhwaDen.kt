@@ -1,15 +1,10 @@
 package eu.kanade.tachiyomi.extension.en.manhwaden
 
-import eu.kanade.tachiyomi.multisrc.madara.Madara
+import eu.kanade.tachiyomi.multisrc.madara.MadaraNoAjax
+import keiyoushi.annotation.Source
 
-class ManhwaDen :
-    Madara(
-        "ManhwaDen",
-        "https://www.manhwaden.com",
-        "en",
-    ) {
-    override val useLoadMoreRequest = LoadMoreStrategy.Never
-    override val useNewChapterEndpoint = true
-
+@Source
+abstract class ManhwaDen : MadaraNoAjax() {
+    override val chapterMode = ChapterMode.MangaAjax
     override val filterNonMangaItems = false
 }

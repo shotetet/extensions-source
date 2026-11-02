@@ -3,42 +3,39 @@ package eu.kanade.tachiyomi.extension.fr.poseidonscans
 import android.content.SharedPreferences
 import androidx.preference.CheckBoxPreference
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.util.asJsoup
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.asJsoup
 import keiyoushi.utils.extractNextJs
 import keiyoushi.utils.extractNextJsRsc
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
-import keiyoushi.utils.tryParse
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import okhttp3.CacheControl
+import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
-import okhttp3.Response
 import java.net.URLDecoder
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
-import java.util.TimeZone
 
-class PoseidonScans :
-    HttpSource(),
+@Source
+abstract class PoseidonScans :
+    KeiSource(),
     ConfigurableSource {
 
-    override val name = "Poseidon Scans"
-    override val baseUrl = "https://poseidon-scans.net"
-    override val lang = "fr"
-    override val supportsLatest = true
-    override val versionId = 2
-
-    override val client = network.cloudflareClient
-
-    val rscHeaders = headersBuilder().add("RSC", "1").build()
+    val rscHeaders: Headers get() = headers.newBuilder().add("RSC", "1").build()
 
     private val preferences: SharedPreferences by getPreferencesLazy()
 
@@ -52,18 +49,12 @@ class PoseidonScans :
         return "$baseUrl/api/covers/$this"
     }
 
-    private val isoDateFormatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ENGLISH).apply {
-        timeZone = TimeZone.getTimeZone("UTC")
-    }
-
     // found /manga/all too
 
     // =============================== Latest ===============================
 
-    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/api/manga/lastchapters?limit=16&page=$page", headers)
-
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        val apiResponse = response.parseAs<LatestApiResponse>()
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
+        val apiResponse = client.get("$baseUrl/api/manga/lastchapters?limit=16&page=$page", Fetch.XHR).parseAs<LatestApiResponse>()
 
         val mangas = apiResponse.data.map { apiManga ->
             SManga.create().apply {
@@ -78,10 +69,8 @@ class PoseidonScans :
 
     // ============================== Popular ===============================
 
-    override fun popularMangaRequest(page: Int): Request = GET(baseUrl, rscHeaders)
-
-    override fun popularMangaParse(response: Response): MangasPage {
-        val mangaDtos = response.extractNextJs<List<PopularMangaData>>() ?: throw Exception("Cant scape data from Next.js")
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val mangaDtos = client.get(baseUrl, rscHeaders, Fetch.XHR).extractNextJs<List<PopularMangaData>>() ?: throw Exception("Cant scape data from Next.js")
 
         val mangas = mangaDtos.map { mangaDto ->
             SManga.create().apply {
@@ -95,8 +84,20 @@ class PoseidonScans :
 
     // =========================== Manga Details ============================
 
-    override fun mangaDetailsParse(response: Response): SManga {
-        val document = response.asJsoup()
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate = coroutineScope {
+        val details = if (fetchDetails) async { fetchDetails(manga) } else null
+        val chapterList = if (fetchChapters) async { fetchChapterList(manga) } else null
+
+        SMangaUpdate(details?.await() ?: manga, chapterList?.await() ?: chapters)
+    }
+
+    private suspend fun fetchDetails(manga: SManga): SManga {
+        val document = client.get(getMangaUrl(manga), Fetch.DOCUMENT).asJsoup()
         val mangaDto = document.extractNextJs<MangaDetailsData>() ?: throw Exception("Cant scape data from Next.js")
 
         return SManga.create().apply {
@@ -105,27 +106,13 @@ class PoseidonScans :
             author = mangaDto.author
             artist = mangaDto.artist
 
-            genre = mangaDto.categories.mapNotNull { it.name.trim().takeIf { name -> name.isNotBlank() } }.joinToString(", ") {
+            genre = mangaDto.categories.mapNotNull { it.name.trim().takeIf { name -> name.isNotBlank() } }.joinToString {
                 it.replaceFirstChar { char -> char.titlecase(Locale.FRENCH) }
             }
 
             status = parseStatus(mangaDto.status)
 
-            var potentialDescription: String? = null
-
-            val jsonDescription = mangaDto.description.trim()
-            if (!jsonDescription.matches(Regex("^\\$[a-f0-9]+$"))) {
-                potentialDescription = jsonDescription
-            }
-
-            // Workaround for cases where description is a pointer to a chunk in the RSC data.
-            description = potentialDescription.takeIf { !it.isNullOrBlank() }
-                ?: document.selectFirst("p.text-gray-300.leading-relaxed")
-                    ?.text()
-                    ?.trim()
-                    ?.replaceFirst("${mangaDto.title} : ", "")
-                    ?.trim()
-                    ?.takeIf { it.isNotBlank() }
+            description = mangaDto.description.trim().takeIf { it.isNotEmpty() }
 
             setUrlWithoutDomain("/serie/${mangaDto.slug}")
         }
@@ -141,19 +128,17 @@ class PoseidonScans :
 
     // ============================== Chapters ==============================
 
-    override fun chapterListRequest(manga: SManga): Request = GET(baseUrl + manga.url, rscHeaders)
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val url = response.request.url
-        val rscBody = response.body.string()
+    private suspend fun fetchChapterList(manga: SManga): List<SChapter> {
+        val url = getMangaUrl(manga).toHttpUrl()
+        val rscBody = client.get(url, rscHeaders, Fetch.XHR).use { it.body.string() }
         val chapters = chapterListRsc(rscBody)
         if (chapters.isNotEmpty()) return chapters
 
         // RSC data can be partial on first load; retry with cache-busting
         val retryUrl = url.newBuilder().addQueryParameter("_", System.currentTimeMillis().toString()).build()
-        val retryRequest = response.request.newBuilder().url(retryUrl).header("Cache-Control", "no-cache").build()
-        val retryResponse = client.newCall(retryRequest).execute()
-        return chapterListRsc(retryResponse.body.string())
+        val retryBody = client.get(retryUrl, rscHeaders, Fetch.XHR, CacheControl.Builder().noCache().build(), ensureSuccess = false)
+            .use { it.body.string() }
+        return chapterListRsc(retryBody)
     }
 
     fun chapterListRsc(rscBody: String): List<SChapter> {
@@ -164,12 +149,9 @@ class PoseidonScans :
             SHOW_PREMIUM_DEFAULT,
         )
         return mangaPageDto.manga.chapters.mapNotNull { ch ->
-            val isLocked = ch.isPremium == true && !mangaPageDto.isPremiumUser
+            val isLocked = ch.isLocked && mangaPageDto.isPremiumUser != true
 
-            if (isLocked && !showPremium) {
-                val premiumUntilDate = ch.premiumUntil?.let { parseIsoDate(it) } ?: 0L
-                if (System.currentTimeMillis() <= premiumUntilDate) return@mapNotNull null
-            }
+            if (isLocked && !showPremium) return@mapNotNull null
             SChapter.create().apply {
                 val chapterNumberString = ch.number.toString().removeSuffix(".0")
                 val isVolume = ch.isVolume == true || (ch.number % 1 == 0f && ch.title?.contains("volume", ignoreCase = true) == true)
@@ -194,9 +176,7 @@ class PoseidonScans :
 
                     if (isLocked) {
                         val dateParts = formatTimestamp(
-                            parseIsoDate(
-                                ch.premiumUntil,
-                            ),
+                            ch.premiumUntil?.toEpochMilliseconds() ?: 0L,
                         ).split(" ")
                         // formatTimestamp gives: [dd, MMMM, HH:mm]
                         append(
@@ -207,32 +187,20 @@ class PoseidonScans :
                 setUrlWithoutDomain(
                     "/serie/${mangaPageDto.manga.slug}/chapter/$chapterNumberString",
                 )
-                date_upload = parseIsoDate(ch.createdAt)
+                date_upload = ch.createdAt.toEpochMilliseconds()
                 chapter_number = ch.number
             }
         }.sortedByDescending { it.chapter_number }
     }
 
-    fun formatTimestamp(timestamp: Long): String {
-        val sdf = SimpleDateFormat("dd MMMM HH:mm", Locale.getDefault())
-        return sdf.format(Date(timestamp))
-    }
-
-    private fun parseIsoDate(dateString: String?): Long {
-        if (dateString.isNullOrBlank()) return 0L
-
-        val cleaned = dateString.removeSurrounding("\"").removePrefix($$"$D")
-
-        return isoDateFormatter.tryParse(cleaned)
-    }
+    fun formatTimestamp(timestamp: Long): String = DateTimeFormatter.ofPattern("dd MMMM HH:mm", Locale.getDefault())
+        .format(Instant.ofEpochMilli(timestamp).atZone(ZoneId.systemDefault()))
 
     // =============================== Pages ================================
 
-    override fun pageListRequest(chapter: SChapter): Request = GET(baseUrl + chapter.url, rscHeaders)
-
-    override fun pageListParse(response: Response): List<Page> {
-        val pageDataDto = response.extractNextJs<PageData>() ?: throw Exception("Cant scape data from Next.js")
-        if (pageDataDto.currentChapter.isPremium) {
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val pageDataDto = client.get(getChapterUrl(chapter), rscHeaders, Fetch.XHR).extractNextJs<PageData>() ?: throw Exception("Cant scape data from Next.js")
+        if (pageDataDto.currentChapter.isLocked) {
             if (pageDataDto.sessionStatus == "unauthenticated") {
                 throw Exception("This chapter is premium. Please connect via the WebView to view.")
             }
@@ -248,20 +216,9 @@ class PoseidonScans :
         }.sortedBy { it.index }
     }
 
-    override fun imageRequest(page: Page): Request {
-        val refererUrl = page.url
-        val imageHeaders = headersBuilder().set(
-            "Accept",
-            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-        ).set("Referer", refererUrl.ifBlank { "$baseUrl/" }).build()
-        return GET(page.imageUrl!!, imageHeaders)
-    }
-
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
-
     // =============================== Search ===============================
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
         val url = baseUrl.toHttpUrl().newBuilder().apply {
             addPathSegment("series")
             if (query.isNotBlank()) {
@@ -272,11 +229,7 @@ class PoseidonScans :
             }
         }.build()
 
-        return GET(url, headers)
-    }
-
-    override fun searchMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
+        val document = client.get(url, Fetch.DOCUMENT).asJsoup()
 
         val mangas = document.select("div.grid a.block.group").map { element ->
             val url = element.attr("href")

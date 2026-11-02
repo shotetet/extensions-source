@@ -1,7 +1,10 @@
 package eu.kanade.tachiyomi.extension.fr.fmteam
 
 import eu.kanade.tachiyomi.multisrc.pizzareader.PizzaReader
+import eu.kanade.tachiyomi.source.model.SManga
+import keiyoushi.annotation.Source
 
-class FMTEAM : PizzaReader("FMTEAM", "https://fmteam.fr", "fr") {
-    override val versionId = 2
+@Source
+abstract class FMTEAM : PizzaReader() {
+    override fun getMangaUrl(manga: SManga): String = "$baseUrl/manga/${manga.url.substringAfterLast('/')}"
 }

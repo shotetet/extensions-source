@@ -1,130 +1,270 @@
 package eu.kanade.tachiyomi.extension.ja.drecomics
 
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.source.model.Filter
+import android.text.InputType
+import androidx.preference.EditTextPreference
+import androidx.preference.PreferenceScreen
+import androidx.preference.SwitchPreferenceCompat
+import eu.kanade.tachiyomi.network.HttpException
+import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
+import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.util.asJsoup
-import keiyoushi.lib.clipstudioreader.ClipStudioReader
-import keiyoushi.utils.firstInstance
-import keiyoushi.utils.tryParse
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.network.post
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.boolean
+import keiyoushi.utils.getPreferencesLazy
+import keiyoushi.utils.parseAs
+import keiyoushi.utils.string
+import keiyoushi.utils.toJsonRequestBody
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
+import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import java.text.SimpleDateFormat
-import java.util.Locale
+import java.io.IOException
 
-class DreComics : ClipStudioReader() {
-    override val name = "DRE Comics"
-    override val baseUrl = "https://drecom-media.jp"
-    override val lang = "ja"
-    override val supportsLatest = false
+@Source
+abstract class DreComics :
+    KeiSource(),
+    ConfigurableSource {
+    private val domain get() = baseUrl.toHttpUrl().host
+    private val apiUrl get() = "https://api.$domain/api/v1/app"
+    private val preferences by getPreferencesLazy()
+    private val tokenMutex = Mutex()
 
-    private val dateFormat = SimpleDateFormat("yyyy年MM月dd日", Locale.JAPAN)
+    private var loginFailed = false
 
-    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/drecomics/series", headers)
-
-    override fun popularMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-        val mangas = document.select(".seriesList__item").map {
-            SManga.create().apply {
-                setUrlWithoutDomain(it.selectFirst("a")!!.absUrl("href"))
-                title = it.selectFirst(".seriesList__text")!!.text()
-                thumbnail_url = it.selectFirst("img")?.absUrl("src")
-            }
-        }
-        return MangasPage(mangas, false)
-    }
-
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = "$baseUrl/search".toHttpUrl().newBuilder().apply {
-            addQueryParameter("t", "2")
-            addQueryParameter("page", page.toString())
-
-            if (query.isNotBlank()) {
-                addQueryParameter("q", query)
-            }
-
-            val selectedLabels = filters.firstInstance<LabelFilter>().state.filter { it.state }
-            selectedLabels.forEach { addQueryParameter("l[]", it.value) }
-            if (selectedLabels.isEmpty()) {
-                addQueryParameter("l[]", "3")
-                addQueryParameter("l[]", "1")
-            }
-
-            filters.firstInstance<GenreFilter>().state.filter { it.state }.forEach {
-                addQueryParameter("g[]", it.value)
-            }
-        }
-        return GET(url.build(), headers)
-    }
-
-    override fun searchMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-        val mangas = document.select("ul.seriesColumn__list li.seriesColumn__item").map {
-            SManga.create().apply {
-                setUrlWithoutDomain(it.selectFirst("a.seriesColumn__linkButton")!!.absUrl("href"))
-                title = it.selectFirst("span.seriesColumn__title")!!.text()
-                thumbnail_url = it.selectFirst("img.seriesColumn__img")?.absUrl("src")
-            }
-        }
-
-        val hasNextPage = document.selectFirst("a.pagination__link-next--active") != null
-        return MangasPage(mangas, hasNextPage)
-    }
-
-    override fun mangaDetailsParse(response: Response): SManga {
-        val document = response.asJsoup()
-        val isWebtoon = response.request.url.pathSegments.contains("drestudios")
-
-        return SManga.create().apply {
-            if (isWebtoon) {
-                title = document.selectFirst(".detailStudios_title span")!!.text()
-                author = document.select(".detailStudios_author p").eachText().joinToString()
-                description = document.selectFirst(".detailStudios_storySynopsis")?.text()
-                genre = document.select(".seriesDetail__genreLink--studios").eachText().joinToString()
-                thumbnail_url = document.selectFirst(".detailStudios_mainLeft img.img-fluid")?.absUrl("src")
-            } else {
-                title = document.selectFirst(".detailComics_title span")!!.text()
-                author = document.select(".detailComics_authorsItem").eachText().joinToString()
-                description = document.selectFirst(".detailComics_synopsis")?.text()
-                genre = document.select(".detailComics_genreListItem").eachText().joinToString()
-                thumbnail_url = document.selectFirst(".detailComicsSection .img-fluid")?.absUrl("src")
-            }
-        }
-    }
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val document = response.asJsoup()
-        val isWebtoon = response.request.url.pathSegments.contains("drestudios")
-
-        if (isWebtoon) {
-            return document.select(".detailStudios_ebookList_item").map {
-                SChapter.create().apply {
-                    name = it.selectFirst(".detailStudios_ebookList_itemTitle")!!.text()
-                    setUrlWithoutDomain(it.absUrl("href"))
+    override fun OkHttpClient.Builder.configureClient() = apply {
+        addInterceptor(ImageInterceptor())
+        addInterceptor { chain ->
+            val request = chain.request()
+            val response = chain.proceed(request)
+            if ((response.code == 401 || response.code == 403) && request.url.pathSegments[3] == "viewer") {
+                if (loginFailed) {
+                    throw IOException("Invalid E-Mail or Password")
                 }
-            }.reversed()
-        }
-
-        return document.select("div.ebookListItem:not(.disabled):not(.product)").map {
-            SChapter.create().apply {
-                val link = it.selectFirst("a.ebookListItem_title")!!
-                name = link.text()
-                setUrlWithoutDomain(link.absUrl("href"))
-                date_upload = dateFormat.tryParse(it.selectFirst(".ebookListItem_publishDate span")?.text()?.substringAfter("公開："))
+                throw IOException("Enter your credentials in Settings and purchase this product to read.")
             }
+            response
         }
     }
 
-    override fun getFilterList(): FilterList = FilterList(
-        Filter.Header("Note: Search and active filters are applied together"),
-        LabelFilter(),
-        GenreFilter(),
-    )
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val url = "$apiUrl/series/ranking".toHttpUrl().newBuilder()
+            .addQueryParameter("page", page.toString())
+            .addQueryParameter("limit", "10")
+            .build()
 
-    override fun latestUpdatesRequest(page: Int): Request = throw UnsupportedOperationException()
-    override fun latestUpdatesParse(response: Response): MangasPage = throw UnsupportedOperationException()
+        val result = client.get(url, Fetch.XHR).parseAs<RankingResponse>()
+        val mangas = result.items.map { it.series.toSManga() }
+        return MangasPage(mangas, result.pagination.hasNextPage())
+    }
+
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
+        val url = "$apiUrl/series".toHttpUrl().newBuilder()
+            .addQueryParameter("sort", "latest_published_at")
+            .addQueryParameter("order", "desc")
+            .addQueryParameter("page", page.toString())
+            .addQueryParameter("limit", "18")
+            .build()
+
+        return client.get(url, Fetch.XHR).toMangasPage()
+    }
+
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
+        val url = "$apiUrl/series".toHttpUrl().newBuilder()
+            .addQueryParameter("keyword", query)
+            .addQueryParameter("page", page.toString())
+            .addQueryParameter("limit", "18")
+            .build()
+
+        return client.get(url, Fetch.XHR).toMangasPage()
+    }
+
+    private fun Response.toMangasPage(): MangasPage {
+        val result = this.parseAs<SeriesResponse>()
+        val mangas = result.items.map { it.toSManga() }
+        return MangasPage(mangas, result.pagination.hasNextPage())
+    }
+
+    override fun getMangaUrl(manga: SManga): String = "$baseUrl/series/${manga.url}"
+
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate = coroutineScope {
+        val details = async {
+            if (!fetchDetails) return@async manga
+            client.get("$apiUrl/series/${manga.url}", Fetch.XHR).parseAs<DetailsResponse>().toSManga()
+        }
+
+        val hideLocked = preferences.getBoolean(HIDE_LOCKED_PREF_KEY, false)
+        val chapterList = async {
+            if (!fetchChapters) return@async chapters
+            val authHeaders = apiHeaders()
+
+            val episodes = async {
+                buildList {
+                    var page = 1
+                    do {
+                        val url = "$apiUrl/episodes".toHttpUrl().newBuilder()
+                            .addQueryParameter("series_code", manga.url)
+                            .addQueryParameter("page", page.toString())
+                            .addQueryParameter("limit", "200")
+                            .addQueryParameter("sort", "episode_number")
+                            .addQueryParameter("order", "desc")
+                            .build()
+
+                        val result = client.get(url, authHeaders, Fetch.XHR).parseAs<ChapterResponse>()
+                        result.items
+                            .filter { !hideLocked || !it.isLocked }
+                            .mapTo(this) { it.toSChapter(manga.url, "episodes") }
+                        page++
+                    } while (result.pagination.hasNextPage())
+                }
+            }
+
+            val volumes = async {
+                val url = "$apiUrl/volumes".toHttpUrl().newBuilder()
+                    .addQueryParameter("series_code", manga.url)
+                    .addQueryParameter("page", "1")
+                    .addQueryParameter("limit", "200")
+                    .addQueryParameter("sort", "volume_number")
+                    .addQueryParameter("order", "desc")
+                    .build()
+
+                client.get(url, authHeaders, Fetch.XHR).parseAs<ChapterResponse>().items
+                    .filter { !hideLocked || (!it.isLocked && !it.isPreview) }
+                    .map { it.toSChapter(manga.url, "volumes") }
+            }
+
+            episodes.await() + volumes.await()
+        }
+
+        SMangaUpdate(
+            details.await(),
+            chapterList.await(),
+        )
+    }
+
+    override fun getChapterUrl(chapter: SChapter): String {
+        val url = "$baseUrl/series/${chapter.memo["seriesCode"]!!.string}/${chapter.memo["type"]!!.string}/${chapter.url}"
+        return if (chapter.memo["isPreview"]!!.boolean) "$url/trial" else url
+    }
+
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val session = if (chapter.memo["isPreview"]!!.boolean) "trial-session" else "session"
+        val result = client.post("$apiUrl/viewer/${chapter.memo["type"]!!.string}/${chapter.url}/$session", apiHeaders(), Fetch.XHR, EMPTY_BODY).parseAs<ViewerResponse>()
+        return result.pages.map {
+            Page(it.pageNumber, imageUrl = "${it.imageUrl}#${result.sessionKey}:${it.iv}")
+        }
+    }
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        SwitchPreferenceCompat(screen.context).apply {
+            key = HIDE_LOCKED_PREF_KEY
+            title = "Hide Locked Chapters"
+            setDefaultValue(false)
+        }.also(screen::addPreference)
+
+        EditTextPreference(screen.context).apply {
+            key = EMAIL_PREF_KEY
+            title = "E-Mail"
+            setOnBindEditTextListener {
+                it.inputType = InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+            }
+            setOnPreferenceChangeListener { _, _ ->
+                clearTokens()
+                true
+            }
+        }.also(screen::addPreference)
+
+        EditTextPreference(screen.context).apply {
+            key = PASSWORD_PREF_KEY
+            title = "Password"
+            setOnBindEditTextListener {
+                it.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            }
+            setOnPreferenceChangeListener { _, _ ->
+                clearTokens()
+                true
+            }
+        }.also(screen::addPreference)
+    }
+
+    private suspend fun apiHeaders(): Headers {
+        val token = getToken() ?: return headers
+        return headersBuilder()
+            .set("Authorization", "Bearer $token")
+            .build()
+    }
+
+    private suspend fun getToken(): String? = tokenMutex.withLock {
+        if (loginFailed) return null
+        if (System.currentTimeMillis() < preferences.getLong(EXPIRES_PREF_KEY, 0L)) return preferences.getString(TOKEN_PREF_KEY, null)
+
+        val refreshToken = preferences.getString(REFRESH_PREF_KEY, "")!!
+        val tokens = refreshToken.takeIf { it.isNotEmpty() }?.let { refresh(it) }
+            ?: login()
+            ?: return null
+
+        preferences.edit().apply {
+            putString(TOKEN_PREF_KEY, tokens.accessToken)
+            putString(REFRESH_PREF_KEY, tokens.refreshToken)
+            putLong(EXPIRES_PREF_KEY, System.currentTimeMillis() + tokens.expiresIn * 1000)
+            apply()
+        }
+        tokens.accessToken
+    }
+
+    private suspend fun login(): LoginResponse? {
+        val email = preferences.getString(EMAIL_PREF_KEY, "")!!
+        val password = preferences.getString(PASSWORD_PREF_KEY, "")!!
+        if (email.isBlank() || password.isBlank()) return null
+
+        return try {
+            client.post("$apiUrl/auth/login", Fetch.XHR, LoginRequest(email, password).toJsonRequestBody()).parseAs<LoginResponse>()
+        } catch (_: HttpException) {
+            loginFailed = true
+            null
+        }
+    }
+
+    private suspend fun refresh(refreshToken: String): LoginResponse? = try {
+        client.post("$apiUrl/auth/refresh", Fetch.XHR, RefreshRequest(refreshToken).toJsonRequestBody()).parseAs<LoginResponse>()
+    } catch (_: HttpException) {
+        null
+    }
+
+    private fun clearTokens() {
+        loginFailed = false
+        preferences.edit().apply {
+            remove(TOKEN_PREF_KEY)
+            remove(REFRESH_PREF_KEY)
+            remove(EXPIRES_PREF_KEY)
+            apply()
+        }
+    }
+
+    companion object {
+        private const val HIDE_LOCKED_PREF_KEY = "hide_locked"
+        private const val EMAIL_PREF_KEY = "email_pref"
+        private const val PASSWORD_PREF_KEY = "password_pref"
+        private const val TOKEN_PREF_KEY = "token"
+        private const val REFRESH_PREF_KEY = "refresh"
+        private const val EXPIRES_PREF_KEY = "expires"
+        private val EMPTY_BODY = ByteArray(0).toRequestBody()
+    }
 }

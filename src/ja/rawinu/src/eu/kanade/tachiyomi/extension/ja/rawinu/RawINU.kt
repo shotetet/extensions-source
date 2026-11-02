@@ -1,33 +1,29 @@
 package eu.kanade.tachiyomi.extension.ja.rawinu
 
 import eu.kanade.tachiyomi.multisrc.fmreader.FMReader
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.util.asJsoup
-import keiyoushi.lib.cookieinterceptor.CookieInterceptor
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.addCookie
+import keiyoushi.network.get
+import keiyoushi.network.rateLimit
+import keiyoushi.utils.asJsoup
 import okhttp3.Cookie
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
-import okhttp3.Request
+import okhttp3.OkHttpClient
 import okhttp3.Response
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
-private const val DOMAIN = "rawinu.com"
+@Source
+abstract class RawINU : FMReader() {
 
-class RawINU :
-    FMReader(
-        "RawINU",
-        "https://$DOMAIN",
-        "ja",
-    ) {
-    override val client = super.client.newBuilder()
-        .rateLimitHost(baseUrl.toHttpUrl(), 2)
-        .addInterceptor(::ddosChallengeInterceptor)
-        .addNetworkInterceptor(CookieInterceptor(DOMAIN, "smartlink_shown" to "1"))
-        .build()
+    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = addInterceptor(::ddosChallengeInterceptor)
+        .addCookie("smartlink_shown" to "1")
+        .rateLimit(2) { it.host == baseUrl.toHttpUrl().host }
 
     private val patternDdosKey = """'([a-f0-9]{32})'""".toRegex()
 
@@ -50,17 +46,17 @@ class RawINU :
 
     private val apiEndpoint = "$baseUrl/app/manga/controllers"
 
+    override fun popularMangaFromElement(element: Element): SManga = super.popularMangaFromElement(element).apply {
+        thumbnail_url = thumbnail_url?.removeSurrounding("'")
+    }
+
     // =========================== Manga Details ============================
     override val infoElementSelector = "div.card-body div.row"
 
     // ============================== Chapters ==============================
-    override fun chapterListRequest(manga: SManga): Request {
+    override suspend fun fetchChapterList(manga: SManga, mangaPage: Document): List<SChapter> {
         val slug = manga.url.substringAfter("/manga-").substringBefore(".html")
-        return GET("$apiEndpoint/cont.Listchapter.php?slug=$slug", headers)
-    }
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val doc = response.asJsoup()
+        val doc = client.get("$apiEndpoint/cont.Listchapter.php?slug=$slug", Fetch.DOCUMENT).asJsoup()
         doc.setBaseUri(baseUrl) // Fixes chapter URLs
         return doc.select(chapterListSelector()).map(::chapterFromElement)
     }
@@ -72,12 +68,11 @@ class RawINU :
     }
 
     // =============================== Pages ================================
-    override fun pageListParse(response: Response): List<Page> {
-        val document = response.asJsoup()
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val document = client.get(getChapterUrl(chapter), Fetch.DOCUMENT).asJsoup()
         val id = document.selectFirst("input[name=chapter]#chapter")!!.attr("value")
-        val req = client.newCall(GET("$apiEndpoint/cont.imagesChap.php?cid=$id", headers)).execute()
 
-        return req.asJsoup().select(pageListImageSelector).mapIndexed { i, img ->
+        return client.get("$apiEndpoint/cont.imagesChap.php?cid=$id", Fetch.DOCUMENT).asJsoup().select(pageListImageSelector).mapIndexed { i, img ->
             Page(i, document.location(), getImgAttr(img))
         }
     }

@@ -1,5 +1,9 @@
 package eu.kanade.tachiyomi.extension.en.sleepytranslations
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
+import keiyoushi.annotation.Source
 
-class SleepyTranslations : Madara("Sleepy Translations", "https://sleepytranslations.com", "en")
+@Source
+abstract class SleepyTranslations : Madara() {
+    override val chapterMode = ChapterMode.MangaAjax
+}

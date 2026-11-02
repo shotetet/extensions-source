@@ -1,84 +1,49 @@
 package eu.kanade.tachiyomi.extension.vi.nettruyenviet
 
-import android.content.SharedPreferences
-import androidx.preference.EditTextPreference
-import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
-import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.util.asJsoup
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.network.rateLimit
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.asJsoup
 import keiyoushi.utils.firstInstanceOrNull
-import keiyoushi.utils.getPreferences
 import keiyoushi.utils.parseAs
-import keiyoushi.utils.tryParse
+import keiyoushi.utils.tryParseDateTime
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.serialization.json.JsonElement
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
-import okhttp3.Response
+import okhttp3.OkHttpClient
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.text.SimpleDateFormat
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
 
-class NetTruyenViet :
-    HttpSource(),
-    ConfigurableSource {
+@Source
+abstract class NetTruyenViet : KeiSource() {
 
-    override val name = "NetTruyenViet (unoriginal)"
-
-    override val lang = "vi"
-
-    private val defaultBaseUrl = "https://nettruyenviet10.com"
-
-    override val baseUrl get() = getPrefBaseUrl()
-
-    override val supportsLatest = true
-
-    override val client = network.cloudflareClient.newBuilder()
-        .rateLimit(5)
-        .build()
-
-    private val preferences: SharedPreferences = getPreferences()
-
-    private val chapterDateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT).apply {
-        timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
-    }
-
-    init {
-        preferences.getString(DEFAULT_BASE_URL_PREF, null).let { prefDefaultBaseUrl ->
-            if (prefDefaultBaseUrl != defaultBaseUrl) {
-                preferences.edit()
-                    .putString(BASE_URL_PREF, defaultBaseUrl)
-                    .putString(DEFAULT_BASE_URL_PREF, defaultBaseUrl)
-                    .apply()
-            }
-        }
-    }
-
-    override fun headersBuilder() = super.headersBuilder()
-        .add("Referer", "$baseUrl/")
+    override fun OkHttpClient.Builder.configureClient() = rateLimit(5)
 
     // ============================== Popular ===============================
 
-    override fun popularMangaRequest(page: Int): Request {
+    override suspend fun getPopularManga(page: Int): MangasPage {
         val url = "$baseUrl/tim-truyen".toHttpUrl().newBuilder()
             .addQueryParameter("sort", "10")
             .addQueryParameter("page", page.toString())
             .build()
-        return GET(url, headers)
+        return parseMangaPage(client.get(url, Fetch.DOCUMENT).asJsoup())
     }
 
-    override fun popularMangaParse(response: Response): MangasPage = parseMangaPage(response)
-
-    private fun parseMangaPage(response: Response): MangasPage {
-        val document = response.asJsoup()
+    private fun parseMangaPage(document: Document): MangasPage {
         val mangaList = document.select("div.items div.row > div.item").map(::mangaFromElement)
         return MangasPage(mangaList, hasNextPage(document))
     }
@@ -101,15 +66,11 @@ class NetTruyenViet :
 
     // ============================== Latest ================================
 
-    override fun latestUpdatesRequest(page: Int): Request {
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
         val url = "$baseUrl/".toHttpUrl().newBuilder()
             .addQueryParameter("page", page.toString())
             .build()
-        return GET(url, headers)
-    }
-
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        val document = response.asJsoup()
+        val document = client.get(url, Fetch.DOCUMENT).asJsoup()
 
         val latestSection = document.selectFirst(
             "div.items:has(h1.page-title:matchesOwn(NetTruyen\\s*-\\s*Truyện tranh online))",
@@ -124,13 +85,13 @@ class NetTruyenViet :
 
     // ============================== Search ================================
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
         if (query.isNotBlank()) {
             val url = "$baseUrl/tim-truyen".toHttpUrl().newBuilder()
                 .addQueryParameter("keyword", query)
                 .addQueryParameter("page", page.toString())
                 .build()
-            return GET(url, headers)
+            return parseMangaPage(client.get(url, Fetch.DOCUMENT).asJsoup())
         }
 
         val genrePath = filters.firstInstanceOrNull<GenreFilter>()?.toUriPart()
@@ -147,17 +108,26 @@ class NetTruyenViet :
             addQueryParameter("page", page.toString())
         }.build()
 
-        return GET(url, headers)
+        return parseMangaPage(client.get(url, Fetch.DOCUMENT).asJsoup())
     }
-
-    override fun searchMangaParse(response: Response): MangasPage = parseMangaPage(response)
 
     // ============================== Details ===============================
 
-    override fun mangaDetailsParse(response: Response): SManga {
-        val infoElement = response.asJsoup().selectFirst("article#item-detail")!!
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate = coroutineScope {
+        val details = async { if (fetchDetails) fetchMangaDetails(manga) else manga }
+        val chapterList = async { if (fetchChapters) fetchChapterList(manga) else chapters }
+        SMangaUpdate(details.await(), chapterList.await())
+    }
 
-        return SManga.create().apply {
+    private suspend fun fetchMangaDetails(manga: SManga): SManga {
+        val infoElement = client.get(getMangaUrl(manga), Fetch.DOCUMENT).asJsoup().selectFirst("article#item-detail")!!
+
+        return manga.apply {
             title = infoElement.selectFirst("h1.title-detail, h1")!!.text()
             author = infoElement.selectFirst("li.author p.col-xs-8")?.text()
             status = infoElement.selectFirst("li.status p.col-xs-8")?.text().toStatus()
@@ -192,7 +162,7 @@ class NetTruyenViet :
 
     // ============================== Chapters ==============================
 
-    override fun chapterListRequest(manga: SManga): Request {
+    private suspend fun fetchChapterList(manga: SManga): List<SChapter> {
         val slug = manga.url.substringAfter("/truyen-tranh/").substringBefore("/")
             .ifEmpty { manga.url.substringAfterLast("/") }
 
@@ -200,16 +170,11 @@ class NetTruyenViet :
             .addQueryParameter("slug", slug)
             .build()
 
-        val chapterHeaders = headersBuilder()
+        val chapterHeaders = headers.newBuilder()
             .add("X-Requested-With", "XMLHttpRequest")
             .build()
 
-        return GET(url, chapterHeaders)
-    }
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val slug = response.request.url.queryParameter("slug") ?: return emptyList()
-        val chapterItems = response.parseAs<ChapterListDto>().toChapterItems(slug)
+        val chapterItems = client.get(url, chapterHeaders, Fetch.XHR).parseAs<ChapterListDto>().toChapterItems(slug)
         return chapterItems.map { chapterItem ->
             SChapter.create().apply {
                 name = chapterItem.name
@@ -220,7 +185,7 @@ class NetTruyenViet :
         }
     }
 
-    private fun parseChapterDate(rawDate: String): Long = chapterDateFormat.tryParse(rawDate).takeIf { it > 0L } ?: parseRelativeDate(rawDate)
+    private fun parseChapterDate(rawDate: String): Long = chapterDateFormat.tryParseDateTime(rawDate, VN_ZONE).takeIf { it > 0L } ?: parseRelativeDate(rawDate)
 
     private fun parseRelativeDate(dateText: String?): Long {
         if (dateText.isNullOrBlank()) return 0L
@@ -244,8 +209,8 @@ class NetTruyenViet :
 
     // ============================== Pages =================================
 
-    override fun pageListParse(response: Response): List<Page> {
-        val imageUrls = response.asJsoup()
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val imageUrls = client.get(getChapterUrl(chapter), Fetch.DOCUMENT).asJsoup()
             .select("#chapter-content img, .reading-detail .page-chapter img, .chapter-content img, .page-chapter img")
             .map { imageElement ->
                 imageElement.absUrl("data-src")
@@ -263,26 +228,9 @@ class NetTruyenViet :
         }
     }
 
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
-
-    // ============================== Settings ===============================
-
-    override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        EditTextPreference(screen.context).apply {
-            key = BASE_URL_PREF
-            title = BASE_URL_PREF_TITLE
-            summary = BASE_URL_PREF_SUMMARY
-            setDefaultValue(defaultBaseUrl)
-            dialogTitle = BASE_URL_PREF_TITLE
-            dialogMessage = "Default: $defaultBaseUrl"
-        }.let(screen::addPreference)
-    }
-
-    private fun getPrefBaseUrl(): String = preferences.getString(BASE_URL_PREF, defaultBaseUrl)!!
-
     // ============================== Filters ================================
 
-    override fun getFilterList(): FilterList = getFilters(
+    override fun getFilterList(data: JsonElement?): FilterList = getFilters(
         genres = GenreFilterOptions,
         websites = WebsiteFilterOptions,
     )
@@ -291,9 +239,7 @@ class NetTruyenViet :
         private val RELATIVE_DATE_NUMBER_REGEX = Regex("\\d+")
         private val NETTRUYEN_LOGO_URL_REGEX = Regex("/assets/images/nettruyenviet\\.webp", RegexOption.IGNORE_CASE)
         private const val NEXT_PAGE_SYMBOL = "›"
-        private const val DEFAULT_BASE_URL_PREF = "defaultBaseUrl"
-        private const val BASE_URL_PREF = "overrideBaseUrl"
-        private const val BASE_URL_PREF_TITLE = "Ghi đè URL cơ sở"
-        private const val BASE_URL_PREF_SUMMARY = "Dành cho sử dụng tạm thời, cập nhật tiện ích sẽ xóa cài đặt."
+        private val VN_ZONE = ZoneId.of("Asia/Ho_Chi_Minh")
+        private val chapterDateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.ROOT)
     }
 }

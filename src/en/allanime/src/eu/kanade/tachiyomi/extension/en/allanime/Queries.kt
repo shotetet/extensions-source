@@ -54,9 +54,9 @@ const val SEARCH_QUERY: String = $$"""
     }
 """
 
-const val DETAILS_QUERY: String = $$"""
-    query ($id: String!) {
-        manga(_id: $id) {
+const val UPDATE_QUERY: String = $$"""
+    query ($id: String!, $showId: String!, $search: SearchInput) {
+        manga(_id: $id, search: $search) {
             _id
             name
             thumbnail
@@ -67,15 +67,9 @@ const val DETAILS_QUERY: String = $$"""
             status
             altNames
             englishName
-        }
-    }
-"""
-
-const val CHAPTERS_QUERY: String = $$"""
-    query ($id: String!, $showId: String!) {
-        manga(_id: $id) {
-            _id
-            name
+            malId
+            aniListId
+            relatedMangas
             availableChaptersDetail
         }
         episodeInfos(
@@ -90,21 +84,43 @@ const val CHAPTERS_QUERY: String = $$"""
     }
 """
 
-const val PAGE_QUERY: String = $$"""
+const val RELATED_QUERY: String = $$"""
     query (
-        $id: String!
-        $translationType: VaildTranslationTypeMangaEnumType!
-        $chapterNum: String!
+        $ids: [String!]!
+        $search: SearchInput
+        $fewerGenresSearch: SearchInput
+        $size: Int
+        $translationType: VaildTranslationTypeMangaEnumType
     ) {
-        chapterPages(
-            mangaId: $id
-            translationType: $translationType
-            chapterString: $chapterNum
-        ) {
-            edges {
-                pictureUrls
-                pictureUrlHead
-            }
+      mangas(
+          search: $search
+          limit: $size
+          translationType: $translationType
+      ) {
+        edges {
+          _id
+          name
+          thumbnail
+          englishName
         }
+      }
+      fewerGenresSearch: mangas(
+          search: $fewerGenresSearch
+          limit: $size
+          translationType: $translationType
+      ) {
+        edges {
+          _id
+          name
+          thumbnail
+          englishName
+        }
+      }
+      mangasWithIds(ids: $ids) {
+        _id
+        name
+        thumbnail
+        englishName
+      }
     }
 """

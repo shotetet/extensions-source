@@ -3,45 +3,50 @@ package eu.kanade.tachiyomi.extension.all.xkcd
 import android.content.SharedPreferences
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.util.asJsoup
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
 import keiyoushi.lib.textinterceptor.TextInterceptor
 import keiyoushi.lib.textinterceptor.TextInterceptorHelper
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.asJsoup
 import keiyoushi.utils.getPreferencesLazy
-import keiyoushi.utils.tryParse
+import keiyoushi.utils.parseAs
+import keiyoushi.utils.tryParseDate
+import kotlinx.serialization.Serializable
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.jsoup.nodes.Element
-import rx.Observable
-import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-open class Xkcd(
-    final override val baseUrl: String,
-    final override val lang: String,
-) : HttpSource(),
+@Source
+abstract class Xkcd :
+    KeiSource(),
     ConfigurableSource {
-    final override val name = "xkcd"
 
-    final override val supportsLatest = false
-    override val client: OkHttpClient = network.client.newBuilder()
-        .addInterceptor(TextInterceptor())
+    override val supportsLatest = false
+
+    override fun OkHttpClient.Builder.configureClient() = addInterceptor(TextInterceptor())
         .addInterceptor { chain ->
             val request = chain.request()
             val url = request.url
             if (url.host != "thumbnail") return@addInterceptor chain.proceed(request)
 
-            val image = this::class.java
+            val image = this@Xkcd::class.java
                 .getResourceAsStream("/assets/thumbnail.png")!!
                 .readBytes()
             val responseBody = image.toResponseBody("image/png".toMediaType())
@@ -53,36 +58,66 @@ open class Xkcd(
                 .body(responseBody)
                 .build()
         }
-        .build()
 
-    protected open val archive = "/archive"
-
-    protected open val creator = "Randall Munroe"
-
-    protected open val synopsis =
-        "A webcomic of romance, sarcasm, math and language."
-
-    protected open val interactiveText =
-        "To experience the interactive version of this comic, open it in WebView/browser."
-
-    protected open val chapterListSelector = "#middleContainer > a"
-
-    protected open val imageSelector = "#comic > img"
-
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT)
-
-    protected open fun String.timestamp(): Long {
-        // normalize dates like "2022-2-2" to "2022-02-02"
-        val normalized = this.split("-").let { parts ->
-            "${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}"
+    private val archive: String
+        get() = when (lang) {
+            "fr" -> "/tous-episodes.php"
+            "ru" -> "/img"
+            "zh" -> "/api/strips.json"
+            else -> "/archive"
         }
-        return dateFormat.tryParse(normalized)
-    }
 
-    val chapterTitleFormatter: (Int, String) -> String = { number, text -> "$number: $text" }
+    private val creator: String
+        get() = when (lang) {
+            "ru" -> "Рэндел Манро"
+            "zh" -> "兰德尔·门罗"
+            else -> "Randall Munroe"
+        }
+
+    private val synopsis: String
+        get() = when (lang) {
+            "es" -> "Un webcómic sobre romance, sarcasmo, mates y lenguaje."
+            "fr" -> "Un webcomic sarcastique qui parle de romance, de maths et de langage."
+            "ru" -> "о романтике, сарказме, математике и языке"
+            "zh" -> "這裡翻譯某個關於浪漫、諷刺、數學、以及語言的漫畫"
+            else -> "A webcomic of romance, sarcasm, math and language."
+        }
+
+    private val interactiveText: String
+        get() = when (lang) {
+            "es" -> "Para experimentar la versión interactiva de este cómic, ábralo en WebView/navegador."
+            "zh" -> "要體驗本漫畫的互動版請在WebView/瀏覽器中打開。"
+            "fr", "ru" -> throw UnsupportedOperationException()
+            else -> "To experience the interactive version of this comic, open it in WebView/browser."
+        }
+
+    private val chapterListSelector: String
+        get() = when (lang) {
+            "es" -> ".archive-entry > a"
+            "fr" -> "#content .s > a:not(:last-of-type)"
+            "ru" -> ".main > a"
+            "zh" -> throw UnsupportedOperationException()
+            else -> "#middleContainer > a"
+        }
+
+    private val imageSelector: String
+        get() = when (lang) {
+            "es" -> "#middleContent .strip"
+            "fr" -> "#content .s"
+            "ru" -> ".main"
+            "zh" -> "#content > img:not([id])"
+            else -> "#comic > img"
+        }
+
+    private val defaultFallbackThumbnail = "https://thumbnail/xkcd.png"
+
+    private val dateFormat = DateTimeFormatter.ofPattern("yyyy-M-d", Locale.ROOT)
+
+    private fun String.timestamp(): Long = dateFormat.tryParseDate(this, ZoneOffset.UTC)
+
+    private val chapterTitleFormatter: (Int, String) -> String = { number, text -> "$number: $text" }
 
     // Preferences
-
     private val preferences: SharedPreferences by getPreferencesLazy()
 
     companion object {
@@ -98,7 +133,7 @@ open class Xkcd(
             companion object {
                 const val PREF_KEY = "organization_method"
                 val defaultOption = SINGLE
-                fun fromKey(key: String) = values().find { it.key == key } ?: defaultOption
+                fun fromKey(key: String) = entries.find { it.key == key } ?: defaultOption
             }
         }
     }
@@ -107,8 +142,8 @@ open class Xkcd(
         ListPreference(screen.context).apply {
             key = OrganizationMethod.PREF_KEY
             title = "Organization Method"
-            entries = OrganizationMethod.values().map { it.displayName }.toTypedArray()
-            entryValues = OrganizationMethod.values().map { it.key }.toTypedArray()
+            entries = OrganizationMethod.entries.map { it.displayName }.toTypedArray()
+            entryValues = OrganizationMethod.entries.map { it.key }.toTypedArray()
             setDefaultValue(OrganizationMethod.defaultOption.key)
             summary = "Current: %s\n\n" +
                 "Changing this will show comics grouped differently. " +
@@ -124,22 +159,20 @@ open class Xkcd(
 
     // what key to use for grouping comics into mangas
     private fun getChapterToKey(): (SChapter) -> String = when (getOrganizationMethod()) {
-        OrganizationMethod.SINGLE -> { chapter -> "SINGLE" }
-
+        OrganizationMethod.SINGLE -> { _ -> "SINGLE" }
         OrganizationMethod.BY_YEAR -> { chapter ->
-            val date = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(chapter.date_upload)
-            date.split("-")[0] // Extract year
+            yearFormat.format(Instant.ofEpochMilli(chapter.date_upload).atZone(ZoneId.systemDefault()))
         }
-
         OrganizationMethod.BY_YEAR_MONTH -> { chapter ->
-            val date = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(chapter.date_upload)
-            val parts = date.split("-")
-            "${parts[0]}-${parts[1].padStart(2, '0')}" // "2024-01"
+            yearMonthFormat.format(Instant.ofEpochMilli(chapter.date_upload).atZone(ZoneId.systemDefault()))
         }
     }
 
+    private val yearFormat = DateTimeFormatter.ofPattern("yyyy", Locale.ROOT)
+    private val yearMonthFormat = DateTimeFormatter.ofPattern("yyyy-MM", Locale.ROOT)
+
     private fun getKeyToTitleFormatter(): (String) -> String = when (getOrganizationMethod()) {
-        OrganizationMethod.SINGLE -> { key -> "xkcd" }
+        OrganizationMethod.SINGLE -> { _ -> "xkcd" }
         OrganizationMethod.BY_YEAR -> { key -> "xkcd $key" }
         OrganizationMethod.BY_YEAR_MONTH -> { key -> "xkcd $key" }
     }
@@ -153,18 +186,16 @@ open class Xkcd(
 
     // some translations don't provide dates for their comics, but we can look up the dates
     // (of english publication) given the comic number which is shared across translations
-    protected fun getComicDateMappingFromEnglishArchive(): Map<Int, String> {
+    private suspend fun getComicDateMappingFromEnglishArchive(): Map<Int, String> {
         val now = System.currentTimeMillis()
         if (comicDateMapping == null || now - comicDateMappingTime > CACHE_EXPIRY_MS) {
             comicDateMapping = try {
-                val response = client.newCall(GET("$ENGLISH_BASE_URL/archive/", headers)).execute()
-                val doc = response.asJsoup()
-                doc.select("#middleContainer > a").associate { element ->
+                client.get("$ENGLISH_BASE_URL/archive/", Fetch.DOCUMENT).asJsoup().select("#middleContainer > a").associate { element ->
                     val number = element.attr("href").removeSurrounding("/").toInt()
                     val date = element.attr("title") // "2026-1-9" format
                     number to date
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 emptyMap()
             }
             comicDateMappingTime = now
@@ -172,20 +203,19 @@ open class Xkcd(
         return comicDateMapping ?: emptyMap()
     }
 
-    private fun getAllComicsAsChapters(): List<SChapter> {
+    private suspend fun getAllComicsAsChapters(): List<SChapter> {
         val now = System.currentTimeMillis()
         if (allChaptersCache == null || now - allChaptersCacheTime > CACHE_EXPIRY_MS) {
-            val response = client.newCall(GET(baseUrl + archive, headers)).execute()
-            allChaptersCache = chapterListParse(response)
+            allChaptersCache = chapterListParse(client.get(baseUrl + archive, if (lang == "zh") Fetch.XHR else Fetch.DOCUMENT))
             allChaptersCacheTime = now
         }
         return allChaptersCache!!
     }
 
-    private fun getGroupedChapters(): Map<String, List<SChapter>> = getAllComicsAsChapters().groupBy(getChapterToKey())
+    private suspend fun getGroupedChapters(): Map<String, List<SChapter>> = getAllComicsAsChapters().groupBy(getChapterToKey())
 
     // organize chapters into mangas according to the chosen key
-    private fun makeGroupedManga(page: Int, perPage: Int = 10): MangasPage {
+    private suspend fun makeGroupedManga(page: Int, perPage: Int = 10): MangasPage {
         val groupedChapters = getGroupedChapters()
         val allKeys = groupedChapters.keys.sortedDescending() // Newest first
 
@@ -204,22 +234,14 @@ open class Xkcd(
             SManga.create().apply {
                 title = getKeyToTitleFormatter()(key)
                 url = key
-
-                // these constants can get overriden by translations
                 artist = creator
                 author = creator
                 description = synopsis
-
-                // TODO: this could theoretically be improved - xkcd doesn't retroactively
-                // publish comics so if organizing by date, the manga for periods != current
-                // period could be set to COMPLETED instead
                 status = SManga.ONGOING
-
-                // fetch real thumbnail
-                thumbnail_url = if (firstChapter != null) {
+                thumbnail_url = if (firstChapter != null && getOrganizationMethod() != OrganizationMethod.SINGLE) {
                     fetchThumbnailUrlForChapter(firstChapter)
                 } else {
-                    "https://thumbnail/xkcd.png"
+                    defaultFallbackThumbnail
                 }
                 initialized = true
             }
@@ -228,92 +250,201 @@ open class Xkcd(
         return MangasPage(mangas, hasNextPage)
     }
 
-    // overrides
+    // ============================== Popular ==============================
 
-    final override fun fetchPopularManga(page: Int): Observable<MangasPage> = Observable.just(makeGroupedManga(page))
+    override suspend fun getPopularManga(page: Int): MangasPage = makeGroupedManga(page)
 
-    final override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = Observable.just(MangasPage(emptyList(), false))
+    // ============================== Latest ===============================
 
-    final override fun fetchMangaDetails(manga: SManga): Observable<SManga> = Observable.just(manga)
+    override suspend fun getLatestUpdates(page: Int): MangasPage = throw UnsupportedOperationException()
 
-    final override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> = Observable.just(getGroupedChapters()[manga.url] ?: emptyList())
+    // ============================== Search ===============================
 
-    // methods for translations to override
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage = MangasPage(emptyList(), false)
 
-    // archiveResponse -> List<SChapter>
-    override fun chapterListParse(response: Response) = response.asJsoup().select(chapterListSelector).map {
-        SChapter.create().apply {
-            // turn comic entry from archive entry into SChapter
-            url = it.attr("href")
-            val comicNumber = url.removeSurrounding("/").toInt()
-            name = chapterTitleFormatter(comicNumber, it.text())
-            chapter_number = comicNumber.toFloat()
-            date_upload = it.attr("title").timestamp()
-        }
+    // ============================== Details ==============================
+
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val newChapters = if (fetchChapters) getGroupedChapters()[manga.url] ?: emptyList() else chapters
+        return SMangaUpdate(manga, newChapters)
     }
 
-    override fun pageListParse(response: Response): List<Page> {
-        // if the img tag is empty or has siblings then it is an interactive comic
-        val img = response.asJsoup().selectFirst(imageSelector)?.takeIf {
-            it.nextElementSibling() == null
-        } ?: error(interactiveText)
+    override fun getMangaUrl(manga: SManga): String = baseUrl
 
-        // if an HD image is available it'll be the srcset attribute
-        val image = when {
-            !img.hasAttr("srcset") -> img.attr("abs:src")
-            else -> img.attr("abs:srcset").substringBefore(' ')
-        }
+    // ============================= Chapters ==============================
 
-        // create a text image for the alt text
-        val text = TextInterceptorHelper.createUrl(img.attr("alt"), img.attr("title"))
+    private suspend fun chapterListParse(response: Response): List<SChapter> {
+        val englishDates = getComicDateMappingFromEnglishArchive()
 
-        return listOf(Page(0, "", image), Page(1, "", text))
-    }
-
-    protected open fun extractImageFromContainer(container: Element): Element? = container
-
-    protected open val defaultFallbackThumbnail = "https://thumbnail/xkcd.png"
-
-    protected open fun fetchThumbnailUrlForChapter(chapter: SChapter): String {
-        return try {
-            val response = client.newCall(GET(baseUrl + chapter.url, headers)).execute()
-            if (!response.isSuccessful) {
-                return defaultFallbackThumbnail
-            }
-
-            val doc = response.asJsoup()
-            val container = doc.selectFirst(imageSelector)
-
-            val img = container?.let { extractImageFromContainer(it) }
-                ?: doc.selectFirst("img[alt]") // Fallback to any img with alt text
-
-            val url = img?.let {
-                when {
-                    it.hasAttr("srcset") -> it.attr("abs:srcset").substringBefore(' ')
-                    it.hasAttr("src") -> it.attr("abs:src")
-                    else -> null
+        if (lang == "zh") {
+            return response.parseAs<Map<String, ZhStrip>>().values.map { strip ->
+                val comicNumber = strip.id
+                SChapter.create().apply {
+                    url = "/$comicNumber"
+                    name = chapterTitleFormatter(comicNumber, strip.title)
+                    chapter_number = comicNumber.toFloat()
+                    date_upload = if (englishDates.containsKey(comicNumber)) {
+                        englishDates[comicNumber]!!.timestamp()
+                    } else {
+                        0L
+                    }
                 }
             }
+        }
 
-            url?.takeIf { it.isNotBlank() && !it.contains("thumbnail") } ?: defaultFallbackThumbnail
-        } catch (e: Exception) {
+        var chapters = response.asJsoup().select(chapterListSelector).mapNotNull { element ->
+            when (lang) {
+                "es" -> {
+                    val title = element.text()
+                    val timeElement = element.parent()?.selectFirst("time") ?: return@mapNotNull null
+                    val datePart = timeElement.text()
+
+                    val spanishOverrides = mapOf("/strips/geografia/" to 1472)
+                    val dateToNumber = englishDates.entries.associate { (number, date) ->
+                        val parts = date.split("-")
+                        val normalizedDate = if (parts.size == 3) {
+                            "${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}"
+                        } else {
+                            date
+                        }
+                        normalizedDate to number
+                    }
+
+                    val urlPath = element.absUrl("href").substringAfter(baseUrl)
+                    val comicNumber = spanishOverrides[urlPath] ?: dateToNumber[datePart] ?: return@mapNotNull null
+
+                    SChapter.create().apply {
+                        setUrlWithoutDomain(element.absUrl("href"))
+                        name = chapterTitleFormatter(comicNumber, title)
+                        chapter_number = comicNumber.toFloat()
+                        date_upload = datePart.timestamp()
+                    }
+                }
+                "fr" -> {
+                    SChapter.create().apply {
+                        setUrlWithoutDomain(element.absUrl("href"))
+                        val comicNumber = url.substringAfter('=').toIntOrNull()
+                        name = chapterTitleFormatter(comicNumber ?: 0, element.text())
+                        chapter_number = comicNumber?.toFloat() ?: 0f
+                        date_upload = if (comicNumber != null && englishDates.containsKey(comicNumber)) {
+                            englishDates[comicNumber]!!.timestamp()
+                        } else {
+                            0L
+                        }
+                    }
+                }
+                "ru" -> {
+                    SChapter.create().apply {
+                        setUrlWithoutDomain(element.absUrl("href"))
+                        val comicNumber = url.removeSurrounding("/").toIntOrNull()
+                        val title = element.child(0).attr("alt")
+                        name = chapterTitleFormatter(comicNumber ?: 0, title)
+                        chapter_number = comicNumber?.toFloat() ?: 0f
+                        date_upload = if (comicNumber != null && englishDates.containsKey(comicNumber)) {
+                            englishDates[comicNumber]!!.timestamp()
+                        } else {
+                            0L
+                        }
+                    }
+                }
+                else -> { // en
+                    SChapter.create().apply {
+                        setUrlWithoutDomain(element.absUrl("href"))
+                        val comicNumber = url.removeSurrounding("/").toIntOrNull() ?: 0
+                        name = chapterTitleFormatter(comicNumber, element.text())
+                        chapter_number = comicNumber.toFloat()
+                        date_upload = element.attr("title").timestamp()
+                    }
+                }
+            }
+        }
+
+        if (lang == "fr") {
+            chapters = chapters.reversed()
+        }
+
+        return chapters
+    }
+
+    // =============================== Pages ===============================
+
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val document = client.get(baseUrl + chapter.url, Fetch.DOCUMENT).asJsoup()
+        val container = document.selectFirst(imageSelector)
+            ?: error(interactiveText)
+
+        val img = when (lang) {
+            "fr" -> container.selectFirst("img[src^='strips/']")
+            "ru" -> container.selectFirst("img[src*='/i/']")
+            "zh" -> container
+            else -> container.takeIf { it.nextElementSibling() == null }
+        } ?: error(interactiveText)
+
+        val image = when {
+            lang == "fr" || lang == "ru" || lang == "zh" -> img.absUrl("src")
+            !img.hasAttr("srcset") -> img.absUrl("src")
+            else -> img.absUrl("srcset").substringBefore(' ')
+        }
+
+        val textParam1 = when (lang) {
+            "fr" -> document.selectFirst("#content .s")?.selectFirst("div:not(.buttons)")?.text()?.takeIf { it.isNotEmpty() } ?: img.attr("alt")
+            else -> img.attr("alt")
+        }
+
+        val textParam2 = when (lang) {
+            "ru" -> document.selectFirst(".comics_text")?.text()?.takeIf { it.isNotEmpty() } ?: img.attr("alt")
+            else -> img.attr("title")
+        }
+
+        val text = TextInterceptorHelper.createUrl(textParam1, textParam2)
+
+        return listOf(Page(0, imageUrl = image), Page(1, imageUrl = text))
+    }
+
+    // ============================= Utilities =============================
+
+    private fun extractImageFromContainer(container: Element): Element? = when (lang) {
+        "fr" -> container.selectFirst("img[src^='strips/']")
+        "ru" -> container.selectFirst("img[src*='/i/']")
+        else -> container
+    }
+
+    private suspend fun fetchThumbnailUrlForChapter(chapter: SChapter): String {
+        return try {
+            client.get(baseUrl + chapter.url, Fetch.DOCUMENT, ensureSuccess = false).use { response ->
+                if (!response.isSuccessful) {
+                    return defaultFallbackThumbnail
+                }
+
+                val doc = response.asJsoup()
+                val container = doc.selectFirst(imageSelector)
+
+                val img = container?.let { extractImageFromContainer(it) }
+                    ?: doc.selectFirst("img[alt]")
+
+                val url = img?.let {
+                    when {
+                        it.hasAttr("srcset") -> it.absUrl("srcset").substringBefore(' ')
+                        it.hasAttr("src") -> it.absUrl("src")
+                        else -> null
+                    }
+                }
+
+                url?.takeIf { it.isNotEmpty() && !it.contains("thumbnail") } ?: defaultFallbackThumbnail
+            }
+        } catch (_: Exception) {
             defaultFallbackThumbnail
         }
     }
-
-    final override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
-
-    final override fun latestUpdatesParse(response: Response) = throw UnsupportedOperationException()
-
-    final override fun latestUpdatesRequest(page: Int) = throw UnsupportedOperationException()
-
-    final override fun mangaDetailsParse(response: Response) = throw UnsupportedOperationException()
-
-    final override fun popularMangaParse(response: Response) = throw UnsupportedOperationException()
-
-    final override fun popularMangaRequest(page: Int) = throw UnsupportedOperationException()
-
-    final override fun searchMangaParse(response: Response) = throw UnsupportedOperationException()
-
-    final override fun searchMangaRequest(page: Int, query: String, filters: FilterList) = throw UnsupportedOperationException()
 }
+
+@Serializable
+class ZhStrip(
+    val id: Int,
+    val title: String,
+)

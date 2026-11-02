@@ -1,13 +1,11 @@
 package eu.kanade.tachiyomi.extension.tr.hayalistic
 
-import eu.kanade.tachiyomi.multisrc.madara.Madara
-import java.text.SimpleDateFormat
+import eu.kanade.tachiyomi.multisrc.madara.MadaraNoAjax
+import keiyoushi.annotation.Source
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class Hayalistic :
-    Madara(
-        "Hayalistic",
-        "https://hayalistic.blog",
-        "tr",
-        dateFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH),
-    )
+@Source
+abstract class Hayalistic : MadaraNoAjax() {
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.ROOT)
+}

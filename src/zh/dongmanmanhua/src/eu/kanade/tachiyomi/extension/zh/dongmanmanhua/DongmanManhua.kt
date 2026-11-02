@@ -1,38 +1,29 @@
 package eu.kanade.tachiyomi.extension.zh.dongmanmanhua
 
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.util.asJsoup
-import keiyoushi.utils.tryParse
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.asJsoup
+import keiyoushi.utils.tryParseDate
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
-import okhttp3.Response
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.text.SimpleDateFormat
+import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
 
-class DongmanManhua : HttpSource() {
-    override val name = "Dongman Manhua"
-    override val lang get() = "zh-Hans"
-    override val id get() = 4222375517460530289
-    override val baseUrl = "https://www.dongmanmanhua.cn"
-    override val supportsLatest = true
+@Source
+abstract class DongmanManhua : KeiSource() {
 
-    override fun headersBuilder() = super.headersBuilder()
-        .set("Referer", "$baseUrl/")
-
-    override val client = network.cloudflareClient
-
-    override fun popularMangaRequest(page: Int) = GET("$baseUrl/dailySchedule", headers)
-
-    override fun popularMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val document = client.get("$baseUrl/dailySchedule", Fetch.DOCUMENT).asJsoup()
 
         val entries = document.select("div#dailyList .daily_section li a, div.daily_lst.comp li a")
             .map(::mangaFromElement)
@@ -47,10 +38,8 @@ class DongmanManhua : HttpSource() {
         thumbnail_url = element.selectFirst("img")?.attr("abs:src")
     }
 
-    override fun latestUpdatesRequest(page: Int) = GET("$baseUrl/dailySchedule?sortOrder=UPDATE&webtoonCompleteType=ONGOING", headers)
-
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        val document = response.asJsoup()
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
+        val document = client.get("$baseUrl/dailySchedule?sortOrder=UPDATE&webtoonCompleteType=ONGOING", Fetch.DOCUMENT).asJsoup()
         val day = when (Calendar.getInstance().get(Calendar.DAY_OF_WEEK)) {
             Calendar.SUNDAY -> "div._list_SUNDAY"
             Calendar.MONDAY -> "div._list_MONDAY"
@@ -69,7 +58,7 @@ class DongmanManhua : HttpSource() {
         return MangasPage(entries, false)
     }
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
         val url = baseUrl.toHttpUrl().newBuilder().apply {
             addPathSegment("search")
             addQueryParameter("keyword", query)
@@ -78,11 +67,7 @@ class DongmanManhua : HttpSource() {
             }
         }.build()
 
-        return GET(url, headers)
-    }
-
-    override fun searchMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
+        val document = client.get(url, Fetch.DOCUMENT).asJsoup()
         val entries = document.select("#content > div.card_wrap.search ul:not(#filterLayer) li a")
             .map(::mangaFromElement)
         val hasNextPage = document.selectFirst("div.more_area, div.paginate a[onclick] + a") != null
@@ -90,9 +75,22 @@ class DongmanManhua : HttpSource() {
         return MangasPage(entries, hasNextPage)
     }
 
-    override fun mangaDetailsParse(response: Response): SManga {
-        val document = response.asJsoup()
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val document = client.get(getMangaUrl(manga), Fetch.DOCUMENT).asJsoup()
 
+        val updatedManga = mangaDetailsParse(document).apply { url = manga.url }
+
+        if (!fetchChapters) return SMangaUpdate(updatedManga, chapters)
+
+        return SMangaUpdate(updatedManga, chapterListParse(document))
+    }
+
+    private fun mangaDetailsParse(document: Document): SManga {
         val detailElement = document.selectFirst(".detail_header .info")
         val infoElement = document.selectFirst("#_asideDetail")
 
@@ -126,8 +124,8 @@ class DongmanManhua : HttpSource() {
         }
     }
 
-    override fun chapterListParse(response: Response): List<SChapter> {
-        var document = response.asJsoup()
+    private suspend fun chapterListParse(firstPage: Document): List<SChapter> {
+        var document = firstPage
         var continueParsing = true
         val chapters = mutableListOf<SChapter>()
 
@@ -135,7 +133,7 @@ class DongmanManhua : HttpSource() {
             document.select("ul#_listUl li").map { chapters.add(chapterFromElement(it)) }
             document.select("div.paginate a[onclick] + a").let { element ->
                 if (element.isNotEmpty()) {
-                    document = client.newCall(GET(element.attr("abs:href"), headers)).execute().asJsoup()
+                    document = client.get(element.attr("abs:href"), Fetch.DOCUMENT).asJsoup()
                 } else {
                     continueParsing = false
                 }
@@ -147,18 +145,16 @@ class DongmanManhua : HttpSource() {
     private fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
         name = element.selectFirst("span.subj span")!!.text()
         setUrlWithoutDomain(element.selectFirst("a")!!.absUrl("href"))
-        date_upload = dateFormat.tryParse(element.selectFirst("span.date")?.text())
+        date_upload = dateFormat.tryParseDate(element.selectFirst("span.date")?.text())
     }
 
-    private val dateFormat = SimpleDateFormat("yyyy-M-d", Locale.ENGLISH)
+    private val dateFormat = DateTimeFormatter.ofPattern("yyyy-M-d", Locale.ENGLISH)
 
-    override fun pageListParse(response: Response): List<Page> {
-        val document = response.asJsoup()
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val document = client.get(getChapterUrl(chapter), Fetch.DOCUMENT).asJsoup()
 
         return document.select("div#_imageList > img").mapIndexed { i, element ->
             Page(i, imageUrl = element.attr("data-url"))
         }
     }
-
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 }

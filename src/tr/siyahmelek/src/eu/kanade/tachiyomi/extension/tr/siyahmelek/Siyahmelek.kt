@@ -1,13 +1,14 @@
 package eu.kanade.tachiyomi.extension.tr.siyahmelek
 
 import eu.kanade.tachiyomi.multisrc.initmanga.InitManga
+import keiyoushi.annotation.Source
 
-class Siyahmelek :
-    InitManga(
-        "Siyah Melek",
-        "https://siyahmelek.vip",
-        "tr",
-        latestUrlSlug = "recently-updated",
-        popularUrlSlug = "trending-manga",
-        versionId = 2,
-    )
+@Source
+abstract class Siyahmelek : InitManga() {
+
+    override val mangaUrlDirectory = "manga"
+
+    override val latestUrlSlug = "recently-updated"
+
+    override val popularUrlSlug = "manga-ranking"
+}

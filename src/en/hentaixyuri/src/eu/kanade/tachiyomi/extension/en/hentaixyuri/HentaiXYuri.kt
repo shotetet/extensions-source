@@ -1,13 +1,12 @@
 package eu.kanade.tachiyomi.extension.en.hentaixyuri
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
-import java.text.SimpleDateFormat
+import keiyoushi.annotation.Source
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class HentaiXYuri :
-    Madara(
-        "HentaiXYuri",
-        "https://hentaixyuri.com",
-        "en",
-        dateFormat = SimpleDateFormat("MMM d, yyyy", Locale.US),
-    )
+@Source
+abstract class HentaiXYuri : Madara() {
+    override val chapterDateFormat = DateTimeFormatter.ofPattern("MMM d, uuuu", Locale.US)
+    override val chapterMode = ChapterMode.MangaAjax
+}

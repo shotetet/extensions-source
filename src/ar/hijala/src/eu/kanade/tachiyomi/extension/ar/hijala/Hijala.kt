@@ -6,6 +6,9 @@ import android.graphics.Canvas
 import eu.kanade.tachiyomi.multisrc.mangathemesia.MangaThemesia
 import eu.kanade.tachiyomi.network.await
 import eu.kanade.tachiyomi.source.model.Page
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.fetch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -13,28 +16,16 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.asResponseBody
 import okio.Buffer
 import org.jsoup.nodes.Document
-import java.text.SimpleDateFormat
-import java.util.Locale
 
-class Hijala :
-    MangaThemesia(
-        "Hijala",
-        "https://hijala.com",
-        "ar",
-        dateFormat = SimpleDateFormat("MMMM dd, yyyy", Locale("ar")),
-    ) {
-
-    // Site moved from ZeistManga to MangaThemesia again
-    override val versionId get() = 2
-
-    override val client = network.cloudflareClient.newBuilder()
-        .addInterceptor(::scrambledImageInterceptor)
-        .build()
+@Source
+abstract class Hijala : MangaThemesia() {
+    override fun OkHttpClient.Builder.configureClient() = addInterceptor(::scrambledImageInterceptor)
 
     private fun scrambledImageInterceptor(chain: Interceptor.Chain): Response {
         val request = chain.request()
@@ -52,10 +43,10 @@ class Hijala :
         val pieceBitmaps = runBlocking {
             listOf(leftPieceUrl, rightPieceUrl).map { pieceUrl ->
                 async(Dispatchers.IO) {
-                    val pieceRequest = request.newBuilder().url(pieceUrl).build()
+                    val pieceRequest = request.newBuilder().url(pieceUrl).fetch(Fetch.IMAGE).build()
                     client.newCall(pieceRequest).await().use { response ->
                         response.body.use { body ->
-                            BitmapFactory.decodeStream(body?.byteStream())
+                            BitmapFactory.decodeStream(body.byteStream())
                                 ?: throw Exception("Failed to decode $pieceUrl")
                         }
                     }

@@ -1,51 +1,83 @@
 package eu.kanade.tachiyomi.extension.en.aquamanga
 
-import android.util.Base64
-import eu.kanade.tachiyomi.multisrc.madara.Madara
-import okhttp3.Headers
-import kotlin.random.Random
+import eu.kanade.tachiyomi.multisrc.madara.MadaraNoAjax
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.MangasPage
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.utils.asJsoup
+import keiyoushi.utils.firstInstanceOrNull
+import keiyoushi.utils.parseAs
+import keiyoushi.utils.toJsonElement
+import kotlinx.serialization.json.JsonElement
+import okhttp3.HttpUrl.Companion.toHttpUrl
 
-class AquaManga : Madara("Aqua Manga", "https://aquareader.net", "en") {
-    override val useLoadMoreRequest = LoadMoreStrategy.Never
+@Source
+abstract class AquaManga : MadaraNoAjax() {
+    override val supportsPostId = false
 
-    override fun headersBuilder(): Headers.Builder = super.headersBuilder()
-        .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-        .add("Accept-Language", "en-US,en;q=0.5")
-        .add("Referer", "$baseUrl/")
-        .add("Sec-Fetch-Dest", "document")
-        .add("Sec-Fetch-Mode", "navigate")
-        .add("Sec-Fetch-Site", "same-origin")
-        .add("Upgrade-Insecure-Requests", "1")
-        .add("X-Requested-With", randomValue)
+    override fun archiveSelector() = ".aqua-archive-card"
+    override val archiveUrlSelector = ".aqua-archive-card__title a"
+    override fun nextPageSelector() = "a.next"
+    override val searchQueryParameter = "search"
+    override val filterGenresSelector = "div.aqua-genre-pills"
+    override val orderByFilterOptions = listOf(
+        intl["order_by_filter_latest"] to "latest",
+        intl["order_by_filter_rating"] to "views",
+        intl["order_by_filter_new"] to "new-manga",
+        intl["order_by_filter_az"] to "alphabet",
+    )
 
-    private val littleBitCursedEncodedValue = "ICAgSUFBZ0FFa0FRd0JCQUdjQVNRQkRBRUVBWndCUkFGVUFUZ0JDQUZFQVZRQnNBRUlBVVFCWEFHUUFRZ0JSQURBQVJnQkNBRk1BVlFCR0FFSUFXZ0F3QUVZQVJBQlJBRlVBUmdCVUFGVUFWUUJLQUVVQVVRQlZBRllBUmdCUkFGWUFjQUF6QUZFQWF3QndBRUlBVWdCVkFERUFRZ0JWQUZZQVJnQkRBR0lBYXdCR0FFWUFZUUF3QUVZQVVnQmtBREFBU2dCREFGRUFWUUJrQUdvQVVRQldBRTRBVWdCUkFHc0FVZ0JDQUZJQVZRQnNBRUlBVlFBeUFHUUFRd0JWQUdzQVJnQkhBRllBVlFCR0FGTUFXZ0F3QUVvQU1RQlJBRlVBV2dCR0FGRUFWZ0JhQUZJQVVRQnJBRGtBUWdCU0FGVUFiQUJ" +
-        "DQUZZQVZnQkdBRU1BVmdBd0FFWUFSZ0JPQUVVQVJnQldBRm9BTUFCS0FGTUFVUUJWQUdRQWVnQlJBRllBVmdCdUFGRUFhd0JPQUVJQVVnQnJBR3dBUWdCV0FHd0FSZ0JEQUZZQU1BQkdBRVlBVXdCVkFFWUFWd0JrQURBQVNnQXhBRkVBVlFCa0FGSUFVUUJXQUVZQU13QlJBR3dBVWdCQ0FGSUFNd0JPQUVJQVZRQnRBR1FBUXdCU0FEQUFSZ0JIQUZVQVZRQkdBRmNBVlFCVkFFb0FTQUJSQUZVQVdnQktBRkVBVmdCYUFGSUFVUUJzQUZvQVFnQlNBRmNBT1FCQ0FGb0FSZ0JHQUVNQVZRQnJBRVlBUndCV0FGVUFSZ0JYQUZvQU1BQktBRFVBVVFCVkFGb0FSZ0JSQUZZQVdnQnVBRkVBYXdCa0FFSUFVZ0JGQURFQVFnQldBRllB" +
-        "UmdCREFHTUFhd0JHQUVZQVlnQXdBRVlBVWdCYUFEQUFTZ0JVQUZFQVZRQlNBRW9BVVFCV0FGSUFiZ0JSQUdzQVRnQkNBRklBYkFCc0FFSUFWQUJXQUVZQVF3QlNBREFBUmdCR0FGTUFWUUJHQUdFQVZRQlZBRW9BVndCUkFGVUFWZ0JhQUZFQVZnQktBRklBVVFCdEFHZ0FRZ0JTQUVVQVJnQkNBRlVBYlFCa0FFTUFZd0JyQUVZQVJ3QlNBRlVBUmdCWEFGVUFWUUJLQUV3QVVRQlZBRlVBTUFCUkFGWUFWZ0JTQUZFQWJBQmFBRUlBVWdBd0FERUFRZ0JhQUVnQVpBQkRBRlVBYXdCR0FFY0FWd0JWQUVZQVZBQmFBREFBU2dBeEFGRUFWUUJhQUVZQVVRQlhBRVlBYmdCUkFHc0FaQUJDQUZJQVZRQnNBRUlBVmdCWEFHUUFRd0Jr" +
-        "QUVVQVJnQkZBR0VBTUFCR0FGSUFXZ0F3QUVvQVZ3QlJBRlVBVWdCQ0FGRUFWZ0JLQUc0QVVRQnJBRklBUWdCU0FHc0FNUUJDQUZRQVZRQkdBRU1BVWdBd0FFWUFSZ0JoQURBQVJnQlhBR1FBTUFCS0FGY0FVUUJWQUZZQVdnQlJBRllBWkFCdUFGRUFiQUJhQUVJQVVnQnNBRllBUWdCVkFESUFaQUJEQUZjQWF3QkdBRWNBVWdCVkFFWUFWd0JWQUZVQVN" +
-        "nQm9BRkVBVlFCV0FGb0FVUUJXQUZZQVVnQlJBR3dBYUFCQ0FGSUFhd0JzQUVJQVZnQlhBR1FBUXdCVkFHc0FSZ0JJQUdRQU1BQkdBR29BVVFCVkFFb0FSQUJSQUZVQVdnQktBRkVBVmdCS0FGSUFVUUJ1QUU0QVFnQlNBRlVBYkFCQ0FGWUFNUUJHQUVNQVZnQnJBRVlBUmdCWEFGVUFSZ0JTQUdRQU1BQktBRkFBVVFCVkFGb0FWZ0JSQUZZQVNnQnVBRkVBYXdCc0FFSUFVZ0JyQURFQVFnQldBR3dBUmdCREFGSUFNQUJHQUVZQVRnQkZBRVlBV0FCYUFEQUFSZ0F6QUZFQVZRQldBRm9BVVFCVkFEVUFRZ0JSQUd3QVNnQkNBRklBYkFCV0FFSUFWd0JyQUVZQVFnQmxBR3NBUmdCSEFGSUFWUUJHQUZjQVdnQXdBRW9BVUFCUkF" +
-        "GVUFXZ0JLQUZFQVZnQldBRklBVVFCdUFFb0FRZ0JTQUdzQWJBQkNBRlVBVndCa0FFTUFWUUF3QUVZQVJ3QldBRlVBUmdCWEFGb0FNQUJLQUVRQVVRQlZBRm9BYWdCUkFGY0FTZ0J1QUZFQWJRQjBBRUlBVWdCVkFERUFRZ0JXQUZnQVpBQkRBR01BYXdCR0FFWUFWd0JWQUVZQVV3QmFBREFBU2dCV0FGRUFWUUJhQUZZQVVRQldBRW9BYmdCUkFHd0FUZ0JDQUZJQWJBQldBRUlBVmdCc0FFWUFRd0JUQURBQVJnQkpBRllBVlFCR0FGWUFWUUJWQUVvQVZ3QlJBRlVBV2dCYUFGRUFWd0JPQUc0QVVRQnNBRW9BUWdCU0FHd0FiQUJDQUZVQWJRQmtBRUlBWlFCckFFWUFSd0JTQUZVQVJnQm9BR1FBTUFCS0FFd0FVUUJWQUZZQVNn" +
-        "QlJBRllBVmdCdUFGRUFXQUJzQUVJQVVnQlVBRklBUWdCVkFGY0FaQUJEQUZZQVJRQkdBRWNBVmdCVkFFWUFVd0JhQURBQVNnQkVBRkVBVlFCYUFIWUFVUUJWQURFQVFnQlJBR3NBWkFCQ0FGSUFWZ0JHQUVJQVZnQldBRVlBUXdCV0FHc0FSZ0JHQUZjQVZRQkdBRlFBV2dBd0FFb0FVd0JSQUZVQVdnQldBRkVBVmdCS0FHNEFVUUJ1QUZZQVFnQlNBR3NBVmdCQ0FGWUFiQUJHQUVNQVVnQnJBRVlBUlFCaEFEQUFSZ0JXQUZFQVZRQktBRlVBVVFCVkFGWUFSZ0JSQUZZQWNBQXpBRkVBYXdCd0FFSUFVZ0JWQURFQVFnQlZBRllBUmdCREFHSUFhd0JHQUVZQVlRQXdBRVlBVWdCa0FEQUFTZ0JEQUZFQVZRQmtBR29BVVFCV0FF" +
-        "NEFVZ0JSQUdzQVNnQkNBRklBUkFCQ0FFSUFWUUJHQUVZQVFnQmFBREFBUmdCRUFGRUFWUUJHQUVvQVVRQlZBRVlBYmdCUkFGVUFUZ0JDQUZFQVZRQnNBRUlBVVFCWEFHTUFad0JKQUVNQVFRQm5BRWtBUXdCQkFEMEFJQUFnQUNBQUlBQT0gICA="
-
-    private fun getRandomSubstring(input: String, length: Int): String {
-        val startIndex = (0 until input.length - length + 1).random()
-        return input.substring(startIndex, startIndex + length)
+    override suspend fun fetchFilterData(): JsonElement {
+        val document = client.get("$baseUrl/$mangaSubString/", Fetch.DOCUMENT).asJsoup()
+        return document.selectFirst(filterGenresSelector)?.select("a.aqua-filter-pill")?.mapNotNull { element ->
+            val href = element.attr("href").takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val genre = href.substringAfter("genre=", "")
+            val name = element.text()
+            name to genre
+        }?.distinctBy { it.second }.orEmpty().toJsonElement()
     }
 
-    private val randomLength = Random.Default.nextInt(13, 21)
-
-    private val decodedString = Base64.decode(littleBitCursedEncodedValue, Base64.DEFAULT).toString(Charsets.UTF_8).trim()
-
-    private val randomStringValue = getRandomSubstring(decodedString, randomLength)
-
-    private val chromiumBrowserValue = "org.chromium.chrome"
-
-    private val randomValue = when {
-        Random.nextInt(1, 11) == 1 -> chromiumBrowserValue
-
-        // 10% chance
-        else -> randomStringValue // 90% chance
+    override fun getFilterList(data: JsonElement?): FilterList {
+        val genres = data?.parseAs<List<Pair<String, String>>>()
+        return FilterList(
+            buildList {
+                // Status filter returns randomized result, don't add it unless they fixed it
+                add(OrderByFilter(intl["order_by_filter_title"], orderByFilterOptions, "views"))
+                if (genres?.isNotEmpty() == true) add(SingleGenreSelectFilter(intl["genre_filter_title"], genres, ""))
+            },
+        )
     }
 
-    override val chapterUrlSuffix = ""
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
+        val url = baseUrl.toHttpUrl().newBuilder().apply {
+            addPathSegment(mangaSubString)
+            addPathSegment("")
+            if (page > 1) addPathSegments("page/$page/")
+            filters.firstInstanceOrNull<OrderByFilter>()?.selected?.let {
+                addQueryParameter(orderQueryParameter, it)
+            }
+            filters.firstInstanceOrNull<SingleGenreSelectFilter>()?.selected?.let {
+                addQueryParameter("genre", it)
+            }
+            if (query.isNotBlank()) addQueryParameter(searchQueryParameter, query)
+        }.build()
+        val document = client.get(url, Fetch.DOCUMENT).asJsoup()
+        return MangasPage(parseArchive(document), document.selectFirst(nextPageSelector()) != null)
+    }
+
+    override val mangaDetailsSelectorTitle = ".aqua-series-info__title"
+    override val mangaDetailsSelectorThumbnail = ".aqua-series-cover__img"
+    override val mangaDetailsSelectorDescription = ".aqua-series-synopsis"
+    override val mangaDetailsSelectorStatus = ".aqua-series-meta__status"
+    override val mangaDetailsSelectorGenre = ".aqua-series-genre-pill"
+    override val mangaDetailsSelectorAuthor = ".aqua-series-info__creator-value a"
+    override val mangaDetailsSelectorArtist = ".aqua-series-info__creator-value a"
+
+    override fun chapterListSelector() = ".aqua-ch-item"
+
+    override val chapterUrlSelector = "a"
+    override val chapterNameSelector = ".aqua-ch-item__name"
+    override val chapterDateSelector = ".aqua-ch-item__time"
 }

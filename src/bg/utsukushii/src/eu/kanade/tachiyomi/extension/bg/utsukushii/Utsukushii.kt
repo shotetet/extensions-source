@@ -1,9 +1,9 @@
 package eu.kanade.tachiyomi.extension.bg.utsukushii
 
 import eu.kanade.tachiyomi.multisrc.mmrcms.MMRCMS
-import eu.kanade.tachiyomi.network.GET
-import okhttp3.Request
+import keiyoushi.annotation.Source
 
-class Utsukushii : MMRCMS("Utsukushii", "https://utsukushii-bg.com", "bg") {
-    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/manga-list", headers)
+@Source
+abstract class Utsukushii : MMRCMS() {
+    override fun popularMangaUrl(page: Int) = "$baseUrl/manga-list"
 }

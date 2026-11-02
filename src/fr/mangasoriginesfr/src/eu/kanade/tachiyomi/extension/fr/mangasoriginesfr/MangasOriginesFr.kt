@@ -1,47 +1,82 @@
 package eu.kanade.tachiyomi.extension.fr.mangasoriginesfr
 
-import eu.kanade.tachiyomi.multisrc.madara.Madara
-import eu.kanade.tachiyomi.network.POST
-import eu.kanade.tachiyomi.source.model.SChapter
-import eu.kanade.tachiyomi.util.asJsoup
-import okhttp3.Response
-import java.text.SimpleDateFormat
-import java.util.Locale
+import eu.kanade.tachiyomi.multisrc.origines.Origines
+import keiyoushi.annotation.Source
 
-class MangasOriginesFr :
-    Madara(
-        "Mangas-Origines.fr",
-        "https://mangas-origines.fr",
-        "fr",
-        SimpleDateFormat("MMMM d, yyyy", Locale("fr")),
-    ) {
-    override val mangaSubString = "catalogues"
+@Source
+abstract class MangasOriginesFr : Origines() {
 
-    override val useNewChapterEndpoint = true
+    override val mangaPath = "oeuvre"
 
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val document = response.asJsoup()
+    override val legacyMangaPaths = setOf("catalogues")
 
-        launchIO { countViews(document) }
+    override val origins = listOf(
+        "Manhwa" to "manhwa",
+        "Manhua" to "manhua",
+        "Manga" to "manga",
+    )
 
-        val chaptersWrapper = document.select("div[id^=manga-chapters-holder]")
-
-        var chapterElements = document.select(chapterListSelector())
-
-        if (chapterElements.isEmpty() && !chaptersWrapper.isNullOrEmpty()) {
-            val mangaUrl = document.location().removeSuffix("/")
-
-            val xhrRequest = POST("$mangaUrl/ajax/chapters/", xhrHeaders)
-            val xhrResponse = client.newCall(xhrRequest).execute()
-
-            chapterElements = xhrResponse.asJsoup().select(chapterListSelector())
-            xhrResponse.close()
-        }
-
-        return chapterElements.map(::chapterFromElement)
-    }
-
-    // Manga Details Selectors
-    override val mangaDetailsSelectorAuthor = "div.manga-authors > a"
-    override val mangaDetailsSelectorDescription = "div.summary__content > p"
+    override val genres = listOf(
+        "Action" to "action",
+        "Adventure" to "adventure",
+        "Amitié" to "amitie",
+        "Amour" to "amour",
+        "Art Martiaux" to "art-martiaux",
+        "Aventure" to "aventure",
+        "BL" to "bl",
+        "Boys" to "boys",
+        "Combat" to "combat",
+        "Comedy" to "comedy",
+        "Comédie" to "comedie",
+        "Dark Fantasy" to "dark-fantasy",
+        "Drama" to "drama",
+        "Drame" to "drame",
+        "Dystopie" to "dystopie",
+        "Démon" to "demon",
+        "Ecchi" to "ecchi",
+        "Erotique" to "erotique",
+        "Fantastique" to "fantastique",
+        "Fantasy" to "fantasy",
+        "Guerre" to "guerre",
+        "Harem" to "harem",
+        "Historique" to "historique",
+        "Horreur" to "horreur",
+        "Isekai" to "isekai",
+        "Jeu" to "jeu",
+        "Josei" to "josei",
+        "Magie" to "magie",
+        "Malédiction" to "malediction",
+        "Mature" to "mature",
+        "Moderne" to "moderne",
+        "Mort" to "mort",
+        "Murim" to "murim",
+        "Musique" to "musique",
+        "Mystère" to "mystere",
+        "Novel" to "novel",
+        "Post-Apo" to "post-apo",
+        "Prison" to "prison",
+        "Psychologique" to "psychologique",
+        "Religion" to "religion",
+        "Returner" to "returner",
+        "Romance" to "romance",
+        "Réincarnation" to "reincarnation",
+        "Régression" to "regression",
+        "School life" to "school-life",
+        "Sci-fi" to "sci-fi",
+        "Seinen" to "seinen",
+        "Shojo" to "shojo",
+        "Shonen" to "shonen",
+        "Slice of Life" to "slice-of-life",
+        "Société" to "societe",
+        "Sorcellerie" to "sorcellerie",
+        "Sport" to "sport",
+        "Steampunk" to "steampunk",
+        "Supernaturel" to "supernaturel",
+        "Surnaturel" to "surnaturel",
+        "Tragédie" to "tragedie",
+        "Vengeance" to "vengeance",
+        "Webcomic" to "webcomic",
+        "Yuri" to "yuri",
+        "École" to "ecole",
+    )
 }

@@ -1,8 +1,10 @@
 package eu.kanade.tachiyomi.extension.en.manhwareads
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
+import eu.kanade.tachiyomi.multisrc.madara.MadaraBase.ChapterMode
+import keiyoushi.annotation.Source
 
-class ManhwaReads : Madara("Manhwa Reads", "https://manhwareads.com", "en") {
-    override val useLoadMoreRequest = LoadMoreStrategy.Never
-    override val useNewChapterEndpoint = true
+@Source
+abstract class ManhwaReads : Madara() {
+    override val chapterMode = ChapterMode.MangaAjax
 }

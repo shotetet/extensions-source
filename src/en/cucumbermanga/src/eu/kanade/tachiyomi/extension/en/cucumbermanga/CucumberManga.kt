@@ -1,8 +1,9 @@
 package eu.kanade.tachiyomi.extension.en.cucumbermanga
 
 import eu.kanade.tachiyomi.multisrc.madara.Madara
+import keiyoushi.annotation.Source
 
-class CucumberManga : Madara("Cucumber Manga", "https://cucumbermanga.com", "en") {
-    override val useLoadMoreRequest = LoadMoreStrategy.Always
-    override val useNewChapterEndpoint = true
+@Source
+abstract class CucumberManga : Madara() {
+    override val chapterMode = ChapterMode.MangaAjax
 }

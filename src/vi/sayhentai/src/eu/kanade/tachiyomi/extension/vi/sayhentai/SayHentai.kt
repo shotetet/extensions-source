@@ -1,63 +1,67 @@
 package eu.kanade.tachiyomi.extension.vi.sayhentai
 
-import android.content.SharedPreferences
-import android.widget.Toast
-import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.multisrc.manhwaz.ManhwaZ
-import eu.kanade.tachiyomi.source.ConfigurableSource
-import keiyoushi.utils.getPreferences
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.utils.asJsoup
+import keiyoushi.utils.jsonInstance
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.encodeToJsonElement
+import okhttp3.HttpUrl.Companion.toHttpUrl
 
-class SayHentai :
-    ManhwaZ(
-        "SayHentai",
-        "https://sayhentai.sh",
-        "vi",
-        mangaDetailsAuthorHeading = "Tác giả",
-        mangaDetailsStatusHeading = "Trạng thái",
-    ),
-    ConfigurableSource {
+@Source
+abstract class SayHentai : ManhwaZ() {
+
+    override val mangaDetailsAuthorHeading = "Tác giả"
+
+    override val mangaDetailsStatusHeading = "Trạng thái"
+
     override fun popularMangaSelector() = "#slide-top > .item:contains(a)"
 
-    private val preferences: SharedPreferences = getPreferences()
+    override fun genreListSelector(): String = "ul.genres-grid li a"
 
-    init {
-        preferences.getString(DEFAULT_BASE_URL_PREF, null).let { prefDefaultBaseUrl ->
-            if (prefDefaultBaseUrl != super.baseUrl) {
-                preferences.edit()
-                    .putString(BASE_URL_PREF, super.baseUrl)
-                    .putString(DEFAULT_BASE_URL_PREF, super.baseUrl)
-                    .apply()
-            }
+    override suspend fun fetchFilterData(): JsonElement {
+        val document = client.get("$baseUrl/genre", Fetch.DOCUMENT).asJsoup()
+        val genres = document.select(genreListSelector()).map {
+            SelectOption(
+                it.select(".genre-meta .name").text(),
+                it.absUrl("href").toHttpUrl().encodedPath.removePrefix("/"),
+            )
         }
+        return jsonInstance.encodeToJsonElement(genres)
     }
 
-    override val baseUrl by lazy { getPrefBaseUrl() }
-
-    override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        val baseUrlPref = androidx.preference.EditTextPreference(screen.context).apply {
-            key = BASE_URL_PREF
-            title = BASE_URL_PREF_TITLE
-            summary = BASE_URL_PREF_SUMMARY
-            setDefaultValue(super.baseUrl)
-            dialogTitle = BASE_URL_PREF_TITLE
-            dialogMessage = "Default: ${super.baseUrl}"
-
-            setOnPreferenceChangeListener { _, _ ->
-                Toast.makeText(screen.context, RESTART_APP, Toast.LENGTH_LONG).show()
-                true
-            }
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        if (!fetchChapters) {
+            return super.fetchMangaUpdate(manga, chapters, fetchDetails, false)
         }
-        screen.addPreference(baseUrlPref)
-    }
 
-    private fun getPrefBaseUrl(): String = preferences.getString(BASE_URL_PREF, super.baseUrl)!!
+        val response = client.get(getMangaUrl(manga), Fetch.DOCUMENT)
+        val document = response.asJsoup()
+        val chapterList = parseChapterList(document).toMutableList()
 
-    companion object {
-        private const val DEFAULT_BASE_URL_PREF = "defaultBaseUrl"
-        private const val RESTART_APP = "Khởi chạy lại ứng dụng để áp dụng thay đổi."
-        private const val BASE_URL_PREF_TITLE = "Ghi đè URL cơ sở"
-        private const val BASE_URL_PREF = "overrideBaseUrl"
-        private const val BASE_URL_PREF_SUMMARY =
-            "Dành cho sử dụng tạm thời, cập nhật tiện ích sẽ xóa cài đặt."
+        val moreChaptersUrl = document
+            .selectFirst(".c-chapter-readmore")
+            ?.attr("abs:data-ajax-url")
+            ?.takeIf(String::isNotBlank)
+
+        if (moreChaptersUrl != null) {
+            val moreResponse = client.get(moreChaptersUrl, Fetch.DOCUMENT)
+            chapterList += parseChapterList(moreResponse.asJsoup())
+        }
+
+        return SMangaUpdate(
+            manga = parseMangaDetails(document),
+            chapters = chapterList,
+        )
     }
 }

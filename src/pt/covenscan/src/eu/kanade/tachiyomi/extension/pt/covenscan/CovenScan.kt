@@ -1,22 +1,17 @@
 package eu.kanade.tachiyomi.extension.pt.covenscan
 
-import eu.kanade.tachiyomi.multisrc.madara.Madara
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import eu.kanade.tachiyomi.multisrc.madara.MadaraNoAjax
+import keiyoushi.annotation.Source
+import keiyoushi.network.rateLimit
 import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.seconds
 
-class CovenScan :
-    Madara(
-        "Coven Scan",
-        "https://covendasbruxonas.com",
-        "pt-BR",
-    ) {
-
-    override val client: OkHttpClient = super.client.newBuilder()
-        .rateLimit(1, 2, TimeUnit.SECONDS)
-        .build()
-
-    override val useNewChapterEndpoint = true
+@Source
+abstract class CovenScan : MadaraNoAjax() {
+    override val supportsPostId = false
+    override fun OkHttpClient.Builder.configureClient() = rateLimit(1, 2.seconds)
+    override val chapterMode = ChapterMode.MangaAjax
 
     override val mangaDetailsSelectorAuthor = "div.post-content_item:contains(Author) > div.summary-content"
+    override val supportsFilterFetching = false
 }

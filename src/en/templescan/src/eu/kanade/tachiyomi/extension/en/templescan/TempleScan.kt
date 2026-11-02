@@ -1,227 +1,262 @@
 package eu.kanade.tachiyomi.extension.en.templescan
 
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.source.ConfigurableSource
-import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.util.asJsoup
-import keiyoushi.lib.randomua.addRandomUAPreference
-import keiyoushi.lib.randomua.setRandomUserAgent
-import kotlinx.serialization.json.Json
-import okhttp3.Request
-import okhttp3.Response
-import rx.Observable
-import uy.kohesive.injekt.injectLazy
-import kotlin.math.min
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import keiyoushi.annotation.Source
+import keiyoushi.network.Fetch
+import keiyoushi.network.get
+import keiyoushi.network.post
+import keiyoushi.network.rateLimit
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.asJsoup
+import keiyoushi.utils.extractNextJs
+import keiyoushi.utils.firstInstanceOrNull
+import keiyoushi.utils.getPreferencesLazy
+import keiyoushi.utils.getTurnstileToken
+import keiyoushi.utils.parseAs
+import keiyoushi.utils.stringOrNull
+import keiyoushi.utils.textOrNull
+import keiyoushi.utils.toJsonRequestBody
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import okhttp3.CacheControl
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttpClient
+import org.jsoup.nodes.Document
+import java.io.IOException
 
-class TempleScan :
-    HttpSource(),
+@Source
+abstract class TempleScan :
+    KeiSource(),
     ConfigurableSource {
 
-    override val name = "Temple Scan"
-
-    override val lang = "en"
-
-    override val baseUrl = "https://templetoons.com"
-
-    override val supportsLatest = true
-
-    override val versionId = 3
-
-    override fun headersBuilder() = super.headersBuilder()
-        .set("referer", "$baseUrl/")
-        .set("origin", baseUrl)
-        .setRandomUserAgent()
-
-    override val client = network.cloudflareClient.newBuilder()
-        .rateLimit(1)
-        .build()
-
-    private val json: Json by injectLazy()
-
-    override fun fetchPopularManga(page: Int): Observable<MangasPage> = fetchSearchManga(page, "", OrderFilter.POPULAR)
-
-    override fun fetchLatestUpdates(page: Int): Observable<MangasPage> = fetchSearchManga(page, "", OrderFilter.LATEST)
-
-    private lateinit var seriesCache: List<BrowseSeries>
-
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        if (page == 1) {
-            client.newCall(searchMangaRequest(page, query, filters))
-                .execute()
-                .use(::parseSearchResponse)
-        }
-
-        return Observable.just(parseDirectory(page, query, filters))
+    private val preferences by getPreferencesLazy {
+        edit().remove("pref_rsc_keys").remove("pref_rsc_key_table").apply()
     }
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = GET("$baseUrl/comics", headers)
-
-    private fun parseSearchResponse(response: Response) {
-        val document = response.asJsoup()
-        val script = document.selectFirst("script:containsData(allComics)")!!
-            .data().unescape()
-
-        with(script) {
-            val raw = substringAfter("""allComics":""")
-                .substringBeforeLast("}]")
-
-            seriesCache = raw.parseAs()
-        }
+    override fun OkHttpClient.Builder.configureClient() = apply {
+        rateLimit(1)
     }
 
-    private fun parseDirectory(page: Int, query: String, filters: FilterList): MangasPage {
-        val status = filters.get<StatusFilter>()?.selected
-        val mangaList = seriesCache.filter { series ->
+    private val challengeMutex = Mutex()
+
+    private var challengePassedAt = 0L
+
+    private var challengeFailedAt = 0L
+
+    override suspend fun getPopularManga(page: Int) = getSearchMangaList(page, "", OrderFilter.POPULAR)
+
+    override suspend fun getLatestUpdates(page: Int) = getSearchMangaList(page, "", OrderFilter.LATEST)
+
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
+        val catalog = fetchCatalog()
+        return parseDirectory(catalog, query, filters)
+    }
+
+    private fun parseDirectory(series: List<BrowseSeries>, query: String, filters: FilterList): MangasPage {
+        val status = filters.firstInstanceOrNull<StatusFilter>()?.selected
+        val mangaList = series.filter { series ->
 
             val queryFilter = query.isBlank() ||
                 series.title.contains(query, ignoreCase = true) ||
-                series.alternativeNames?.contains(query, ignoreCase = true) == true
+                series.fields.alternativeNames?.contains(query, ignoreCase = true) == true
 
-            val statusFilter = status == null || series.status == status
+            val statusFilter = status == null || series.fields.status == status
 
             queryFilter && statusFilter
         }.let {
-            val order = filters.get<OrderFilter>()?.selected
+            val order = filters.firstInstanceOrNull<OrderFilter>()
 
-            when (order) {
+            val sorted = when (order?.selected) {
                 "updated" -> it.sortedByDescending { series -> series.updated }
                 "created" -> it.sortedByDescending { series -> series.created }
-                "views" -> it.sortedByDescending { series -> series.views }
+                "views" -> it.sortedByDescending { series -> series.fields.views }
+                "title" -> it.sortedByDescending { series -> series.title.trim().lowercase() }
                 else -> it
             }
+            if (order?.ascending == true) sorted.reversed() else sorted
         }
 
         return MangasPage(
-            mangas = mangaList.subList((page - 1) * 20, min(page * 20, mangaList.size))
-                .map { it.toSManga() },
-            hasNextPage = page * 20 < mangaList.size,
+            mangas = mangaList.map { it.toSManga() },
+            hasNextPage = false,
         )
     }
 
-    override fun getFilterList() = getFilters()
+    override fun getFilterList(data: JsonElement?) = getFilters()
 
-    override fun mangaDetailsParse(response: Response): SManga {
-        val document = response.asJsoup()
-        val details = DETAILS_REGEX.find(document.body().outerHtml())!!.groupValues[1]
-            .unescape()
-            .parseAs<SeriesDetails>()
+    override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
+        if (url.host != baseUrl.toHttpUrl().host || url.pathSegments[0] != "comic") {
+            return null
+        }
 
-        val tags = mutableListOf<String>()
+        val slug = url.pathSegments.getOrNull(1) ?: return null
+        val manga = SManga.create().apply {
+            this.url = "/comic/$slug"
+        }
+
+        return getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = false).manga
+    }
+
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val slug = manga.url.substringAfterLast('/')
+        val document = fetchDocument(getMangaUrl(manga))
+        val details = if (fetchDetails) parseDetails(document, slug) else manga
+        return SMangaUpdate(details, parseChapters(document, slug))
+    }
+
+    private suspend fun parseDetails(document: Document, slug: String): SManga {
+        val series = document.jsonLd<ComicSeriesLd> { it.isSeries }
+        // The status and type only live in the browse catalog.
+        val catalogEntry = fetchCatalog().firstOrNull { it.slug == slug }
+
+        val genres = series?.genre.orEmpty()
+        val badge = catalogEntry?.fields?.badge
+        val adult = genres.any { it.equals("+18", ignoreCase = true) } || badge?.contains("+18") == true
 
         return SManga.create().apply {
-            url = "/comic/${details.slug}"
-            title = details.title
-            thumbnail_url = details.thumbnail
-            status = when (details.status) {
-                "Ongoing" -> SManga.ONGOING
-                "Hiatus" -> SManga.ON_HIATUS
-                "Completed" -> SManga.COMPLETED
-                "Canceled" -> SManga.CANCELLED
-                "Dropped" -> SManga.CANCELLED
-                else -> SManga.UNKNOWN
-            }
-            author = details.author
-            artist = details.studio
-            description = buildString {
-                document.selectFirst("div:has(> p:contains(description))")?.run {
-                    selectFirst("p:contains(description)")?.remove()
-                    selectFirst("div.mt-7:contains(Additional)")?.remove()
-                    selectFirst("div.mt-7:contains(tag)")?.also {
-                        tags += it.select("div.flex > p[class^=bg]").eachText()
-                    }?.remove()
-                    selectFirst("p:contains(tag), p:contains(genre)")?.let {
-                        tags += it.text().substringAfter(":")
-                            .split(",")
-                            .map(String::trim)
-                        // sometimes description <p> have the tag/genre, instead of it being separate
-                        val tmp = clone()
-                        tmp.selectFirst("p:contains(tag), p:contains(genre)")
-                            ?.remove()
-                        if (tmp.text().isNotBlank()) {
-                            it.remove()
-                        }
-                    }
-
-                    this@buildString.append(wholeText().trim())
-                }
-
-                if (!details.alternativeNames.isNullOrBlank()) {
-                    if (isNotBlank()) {
-                        append("\n\n")
-                    }
-                    append("Alternative Name: ", details.alternativeNames, "\n")
-                }
-            }
+            url = "/comic/$slug"
+            title = series?.name ?: catalogEntry!!.title
+            thumbnail_url = series?.image ?: catalogEntry?.fields?.thumbnail
+            author = document.info("Author") ?: series?.author?.name
+            status = parseStatus(catalogEntry?.fields?.status)
             genre = buildList {
-                add(details.badge)
-                add(details.year)
-                if (details.adult) {
-                    add("Adult")
+                badge?.withoutRating()?.let { add(it) }
+                if (adult) add("Adult")
+                addAll(genres.filterNot { it.equals("+18", ignoreCase = true) })
+            }.joinToString().ifEmpty { null }
+            description = buildString {
+                append(document.synopsis() ?: series?.description.orEmpty())
+                val info = listOfNotNull(
+                    document.info("Studio")?.let { "Studio $it" },
+                    document.info("Released")?.let { "Released $it" },
+                )
+                if (info.isNotEmpty()) append("\n\n").append(info.joinToString(" · "))
+                // Commas also appear inside names; only `|` always separates them
+                val altNames = (series?.alternateName ?: document.info("Also known as"))
+                    ?.split('|')?.map(String::trim)?.filter(String::isNotEmpty)?.distinct().orEmpty()
+                if (altNames.isNotEmpty()) {
+                    append("\n\n**Alternative names:**")
+                    altNames.forEach { append("\n- ").append(it) }
                 }
-                addAll(tags.distinct())
-            }.filterNotNull().joinToString()
+            }.trim().ifEmpty { null }
         }
     }
 
-    override fun getMangaUrl(manga: SManga) = "$baseUrl${manga.url}"
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val chapters = DETAILS_REGEX.find(response.body.string())!!.groupValues[1]
-            .unescape()
-            .parseAs<ChapterList>()
-        val mangaSlug = response.request.url.pathSegments.last()
-
-        return chapters.seasons.flatMap { season ->
-            season.chapters.filter {
-                it.price == 0
-            }.map { chapter ->
+    private fun parseChapters(document: Document, slug: String): List<SChapter> {
+        val hideLocked = preferences.getBoolean(PREF_HIDE_LOCKED_CHAPTERS, true)
+        val seriesPage = document.extractNextJs<SeriesPage> { it is JsonObject && "seriesData" in it }!!
+        return seriesPage.chapters
+            .filter { !hideLocked || !it.premium }
+            .map { chapter ->
                 SChapter.create().apply {
-                    url = "/comic/$mangaSlug/${chapter.slug}"
+                    url = "/comic/$slug/${chapter.slug}"
                     name = buildString {
+                        if (chapter.premium) append(LOCK)
                         append(chapter.name)
                         if (!chapter.title.isNullOrBlank()) {
                             append(": ", chapter.title)
                         }
                     }
-                    date_upload = chapter.created
+                    date_upload = chapter.createdAt
                 }
             }
-        }
     }
 
-    override fun pageListParse(response: Response): List<Page> = IMAGES_REGEX.find(response.body.string())!!.groupValues[1]
-        .unescape()
-        .parseAs<List<String>>()
-        .mapIndexed { index, image ->
-            Page(index, imageUrl = image)
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val images = fetchDocument(getChapterUrl(chapter)).extractNextJs<List<String>> { element ->
+            element is JsonArray && (element.firstOrNull() as? JsonPrimitive)?.stringOrNull?.contains("/uploads/") == true
         }
+        return images.orEmpty().mapIndexed { idx, url ->
+            Page(idx, imageUrl = url)
+        }
+    }
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        screen.addRandomUAPreference()
+        SwitchPreferenceCompat(screen.context).apply {
+            key = PREF_HIDE_LOCKED_CHAPTERS
+            title = "Hide locked chapters"
+            summary = "Hide early access chapters that require a subscription. If disabled, they are shown with a \uD83D\uDD12 prefix but stay unreadable without a subscription."
+            setDefaultValue(true)
+        }.also(screen::addPreference)
     }
 
-    private fun String.unescape(): String = UNESCAPE_REGEX.replace(this, "$1")
+    // The site's WAF blocks the default `Cache-Control: max-age=600`
+    private suspend fun getPage(url: String) = client.get(url, Fetch.DOCUMENT, cacheControl = CacheControl.Builder().build()).asJsoup()
 
-    private inline fun <reified T> String.parseAs(): T = json.decodeFromString(this)
+    private suspend fun fetchDocument(url: String): Document {
+        val startedAt = System.currentTimeMillis()
+        val document = getPage(url)
+        if (!document.isChallenge) return document
 
-    private inline fun <reified T : Filter<*>> FilterList.get(): T? = filterIsInstance<T>().firstOrNull()
+        passChallenge(document, startedAt)
+        return getPage(url).also { if (it.isChallenge) throw IOException(SOLVE_MANUALLY) }
+    }
 
-    override fun popularMangaRequest(page: Int) = throw UnsupportedOperationException()
-    override fun popularMangaParse(response: Response) = throw UnsupportedOperationException()
-    override fun searchMangaParse(response: Response) = throw UnsupportedOperationException()
-    override fun latestUpdatesRequest(page: Int) = throw UnsupportedOperationException()
-    override fun latestUpdatesParse(response: Response) = throw UnsupportedOperationException()
-    override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
+    private val Document.isChallenge get() = location().toHttpUrl().encodedPath == "/challenge"
+
+    /** Solves the site's Turnstile and posts the token for its `tt-challenge` cookie. */
+    private suspend fun passChallenge(challengePage: Document, startedAt: Long) = challengeMutex.withLock {
+        // Another request may have passed it while this one waited
+        if (challengePassedAt > startedAt) return@withLock
+        // A challenge that just failed to solve would fail again; leave it to the user.
+        if (System.currentTimeMillis() - challengeFailedAt < CHALLENGE_BACKOFF) throw IOException(SOLVE_MANUALLY)
+
+        try {
+            val chunk = challengePage.selectFirst("script[src*=/app/challenge/page-]")!!.absUrl("src")
+            val siteKey = TURNSTILE_KEY.find(client.get(chunk, Fetch.SCRIPT).body.string())!!.value
+            val token = getTurnstileToken("$baseUrl/challenge", siteKey)
+            client.post("$baseUrl/api/turnstile/verify", Fetch.XHR.from("/challenge"), TurnstileToken(token).toJsonRequestBody()).close()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            challengeFailedAt = System.currentTimeMillis()
+            throw IOException(SOLVE_MANUALLY, e)
+        }
+        challengePassedAt = System.currentTimeMillis()
+    }
+
+    private suspend fun fetchCatalog(): List<BrowseSeries> = fetchDocument("$baseUrl/comics")
+        .extractNextJs<List<JsonObject>> { element ->
+            element is JsonArray && (element.firstOrNull() as? JsonObject)?.containsKey("total_views") == true
+        }!!
+        .map(::BrowseSeries)
+
+    private fun Document.info(label: String) = select("dl dt").firstOrNull { it.text() == label }
+        ?.nextElementSibling()?.textOrNull()
+
+    private inline fun <reified T> Document.jsonLd(predicate: (T) -> Boolean): T? = select("script[type=application/ld+json]")
+        .mapNotNull { runCatching { it.data().parseAs<T>() }.getOrNull() }
+        .firstOrNull(predicate)
+
+    private fun Document.synopsis(): String? = selectFirst("#series-synopsis-text")?.let { element ->
+        element.select("p").takeIf { it.isNotEmpty() }?.joinToString("\n\n") { it.text() }
+            ?: element.text()
+    }?.takeIf { it.isNotBlank() }
+
+    companion object {
+        private const val PREF_HIDE_LOCKED_CHAPTERS = "pref_hide_locked_chapters"
+        private const val LOCK = "\uD83D\uDD12 "
+        private const val SOLVE_MANUALLY = "Open in WebView to pass the site's verification"
+        private const val CHALLENGE_BACKOFF = 5 * 60 * 1000L
+        private val TURNSTILE_KEY = Regex("0x4[A-Za-z0-9_-]{20,}")
+    }
 }
-
-private val UNESCAPE_REGEX = """\\(.)""".toRegex()
-private val DETAILS_REGEX = Regex("""info\\":(\{.*\}).*userIsFollowed""")
-private val IMAGES_REGEX = Regex("""images\\":(\[.*?]).*""")

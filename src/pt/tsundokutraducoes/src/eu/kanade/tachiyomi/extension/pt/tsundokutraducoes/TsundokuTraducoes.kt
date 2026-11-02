@@ -1,23 +1,15 @@
 package eu.kanade.tachiyomi.extension.pt.tsundokutraducoes
 
 import eu.kanade.tachiyomi.multisrc.mangathemesia.MangaThemesia
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import keiyoushi.annotation.Source
+import keiyoushi.network.rateLimit
 import okhttp3.OkHttpClient
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.seconds
 
-class TsundokuTraducoes :
-    MangaThemesia(
-        "Tsundoku Traduções",
-        "https://tsundoku.com.br",
-        "pt-BR",
-        dateFormat = SimpleDateFormat("MMMMM d, yyyy", Locale("pt", "BR")),
-    ) {
+@Source
+abstract class TsundokuTraducoes : MangaThemesia() {
 
-    override val client: OkHttpClient = super.client.newBuilder()
-        .rateLimit(1, 2, TimeUnit.SECONDS)
-        .build()
+    override fun OkHttpClient.Builder.configureClient() = rateLimit(1, 2.seconds)
 
     override val altNamePrefix = "Nome alternativo: "
 

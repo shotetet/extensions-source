@@ -1,12 +1,8 @@
 package keiyoushi.lib.publus
 
+import keiyoushi.utils.parseAs
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-
-@Serializable
-class ConfigPack(
-    val data: String,
-)
 
 @Serializable
 class PublusConfiguration(
@@ -51,3 +47,25 @@ class PublusPageSize(
     @SerialName("Width") val width: Int,
     @SerialName("Height") val height: Int,
 )
+
+@Serializable
+class PublusFragment(
+    val file: String,
+    val no: Int,
+    val ns: Long = 0,
+    val ps: Long = 0,
+    val rs: Long = 0,
+    val bw: Int = 0, // Block Width
+    val bh: Int = 0, // Block Height
+    val cw: Int = 0, // Content Width
+    val ch: Int = 0, // Content Height
+    val k1: List<Int> = emptyList(),
+    val k2: List<Int> = emptyList(),
+    val k3: List<Int> = emptyList(),
+    val extra: Map<String, String>? = null,
+    val s: Boolean = true,
+)
+
+fun String.parseFragmentOrNull(): PublusFragment? = runCatching {
+    this.parseAs<PublusFragment>()
+}.getOrNull()

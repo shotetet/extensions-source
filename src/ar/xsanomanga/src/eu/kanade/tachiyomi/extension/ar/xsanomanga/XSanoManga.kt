@@ -1,19 +1,13 @@
 package eu.kanade.tachiyomi.extension.ar.xsanomanga
 
 import eu.kanade.tachiyomi.multisrc.zeistmanga.ZeistManga
-import okhttp3.Response
+import keiyoushi.annotation.Source
 
-class XSanoManga :
-    ZeistManga(
-        "XSano Manga",
-        "https://www.xsano-manga.com",
-        "ar",
-    ) {
+@Source
+abstract class XSanoManga : ZeistManga() {
 
     // Missing popular
     override val supportsLatest = false
-    override fun popularMangaRequest(page: Int) = latestUpdatesRequest(page)
-    override fun popularMangaParse(response: Response) = latestUpdatesParse(response)
 
     override val mangaDetailsSelector = "main"
 

@@ -5,13 +5,24 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import keiyoushi.utils.tryParse
 import kotlinx.serialization.Serializable
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
+import kotlin.time.Instant
 
-private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT).apply {
-    timeZone = TimeZone.getTimeZone("UTC")
-}
+@Serializable
+class LoginRequestDto(
+    private val email: String,
+    private val password: String,
+    private val rememberMe: Boolean = true,
+)
+
+@Serializable
+class LoginResponseDto(
+    val token: String,
+)
+
+@Serializable
+class ErrorDto(
+    val error: String,
+)
 
 @Serializable
 class SearchResponseDto(
@@ -49,13 +60,18 @@ class MangaDto(
     fun toSChapters(): List<SChapter> = chapters?.map {
         SChapter.create().apply {
             url = "${it.id}"
-            name = it.title?.takeIf { t -> t.isNotBlank() }
+            name = it.title?.takeIf { t -> t.isNotBlank() && t.toDoubleOrNull() == null }
                 ?: "Capítulo ${it.chapterNumber?.toString()?.removeSuffix(".0") ?: ""}".trim()
             chapter_number = it.chapterNumber ?: -1f
-            date_upload = dateFormat.tryParse(it.createdAt)
+            date_upload = Instant.tryParse(it.createdAt)
         }
     }?.sortedByDescending { it.chapter_number } ?: emptyList()
 }
+
+@Serializable
+class TicketDto(
+    val ticket: String,
+)
 
 @Serializable
 class ChapterDto(
